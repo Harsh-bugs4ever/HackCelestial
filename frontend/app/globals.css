@@ -1,0 +1,190 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Design tokens. Light is the base definition; dark is redefined under both the
+   OS media query and an explicit [data-theme] stamp so a toggle wins either way. */
+:root {
+  color-scheme: light;
+
+  --surface-1: #fcfcfb;
+  --surface-2: #ffffff;
+  --page-plane: #f9f9f7;
+
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #898781;
+
+  --gridline: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.1);
+
+  /* categorical - fixed order, never cycled */
+  --series-1: #2a78d6; /* blue   - occupancy / primary measure */
+  --series-2: #eb6834; /* orange - comparison / scenario */
+  --series-3: #1baf7a; /* aqua   - tertiary */
+
+  /* status - reserved, never reused as a series */
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-serious: #ec835a;
+  --status-critical: #d03b3b;
+
+  --delta-up: #006300;
+  --delta-down: #d03b3b;
+
+  /* engine identity - deliberately drawn from the categorical order */
+  --engine-demand: #2a78d6;
+  --engine-maintenance: #eb6834;
+  --engine-workforce: #1baf7a;
+  --engine-guest: #4a3aa7;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --surface-1: #1a1a19;
+    --surface-2: #212120;
+    --page-plane: #0d0d0d;
+
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+
+    --gridline: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.1);
+
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+
+    --delta-up: #0ca30c;
+
+    --engine-demand: #3987e5;
+    --engine-maintenance: #d95926;
+    --engine-workforce: #199e70;
+    --engine-guest: #9085e9;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --surface-1: #1a1a19;
+  --surface-2: #212120;
+  --page-plane: #0d0d0d;
+
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted: #898781;
+
+  --gridline: #2c2c2a;
+  --axis: #383835;
+  --border: rgba(255, 255, 255, 0.1);
+
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+
+  --delta-up: #0ca30c;
+
+  --engine-demand: #3987e5;
+  --engine-maintenance: #d95926;
+  --engine-workforce: #199e70;
+  --engine-guest: #9085e9;
+}
+
+html,
+body {
+  background: var(--page-plane);
+  color: var(--text-primary);
+  font-family: 'Inter', system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Tabular figures only where columns must align vertically. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.card:hover {
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+}
+
+.hairline {
+  border-color: var(--border);
+}
+
+/* Recharts chrome pulled onto the tokens */
+.recharts-cartesian-grid line {
+  stroke: var(--gridline);
+}
+.recharts-cartesian-axis-line,
+.recharts-cartesian-axis-tick-line {
+  stroke: var(--axis);
+}
+.recharts-text {
+  fill: var(--text-muted);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--axis);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Page entry animation */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+main > * {
+  animation: fadeInUp 0.35s ease-out both;
+}
+
+/* Live indicator pulse */
+@keyframes livePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.live-pulse {
+  animation: livePulse 2s ease-in-out infinite;
+}
+
+/* Button hover lift */
+button:not(:disabled):hover {
+  filter: brightness(1.08);
+}
+
+/* Active nav link */
+.nav-link-active {
+  background: color-mix(in oklab, var(--text-primary) 8%, transparent);
+  color: var(--text-primary) !important;
+  font-weight: 600;
+}

@@ -1,0 +1,116 @@
+"use client";
+
+import type { ReactNode } from "react";
+
+/** A stat tile: one number, its label, an optional delta. Not a chart. */
+export function StatTile({
+  label,
+  value,
+  sub,
+  delta,
+  deltaGood,
+  accent,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  delta?: string;
+  deltaGood?: boolean;
+  accent?: string;
+}) {
+  return (
+    <div className="card p-4 flex flex-col gap-1" style={accent ? { borderTop: `2px solid ${accent}` } : undefined}>
+      <div className="text-[12px] uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>
+        {label}
+      </div>
+      <div className="text-2xl font-semibold leading-tight">{value}</div>
+      <div className="flex items-center gap-2 text-[12px]" style={{ color: "var(--text-secondary)" }}>
+        {delta && (
+          <span
+            style={{ color: deltaGood ? "var(--delta-up)" : "var(--delta-down)" }}
+            className="font-medium"
+          >
+            {delta}
+          </span>
+        )}
+        {sub && <span>{sub}</span>}
+      </div>
+    </div>
+  );
+}
+
+export function Section({
+  title,
+  description,
+  action,
+  children,
+}: {
+  title: string;
+  description?: string;
+  action?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section className="flex flex-col gap-3">
+      <div className="flex items-end justify-between gap-4 flex-wrap">
+        <div>
+          <h2 className="text-[17px] font-semibold tracking-tight">{title}</h2>
+          {description && (
+            <p className="text-[13px] mt-0.5" style={{ color: "var(--text-secondary)" }}>
+              {description}
+            </p>
+          )}
+        </div>
+        {action}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+export function StatusPill({ status }: { status: "critical" | "watch" | "healthy" | string }) {
+  const map: Record<string, { color: string; icon: string; label: string }> = {
+    critical: { color: "var(--status-critical)", icon: "▲", label: "Critical" },
+    watch: { color: "var(--status-warning)", icon: "●", label: "Watch" },
+    healthy: { color: "var(--status-good)", icon: "✓", label: "Healthy" },
+  };
+  const s = map[status] ?? { color: "var(--text-muted)", icon: "○", label: status };
+  return (
+    <span
+      className="inline-flex items-center gap-1 text-[12px] font-medium px-1.5 py-0.5 rounded"
+      style={{ color: s.color, background: `color-mix(in oklab, ${s.color} 12%, transparent)` }}
+    >
+      <span aria-hidden>{s.icon}</span>
+      {s.label}
+    </span>
+  );
+}
+
+export function Spinner({ label = "Loading" }: { label?: string }) {
+  return (
+    <div className="flex items-center gap-2 text-[13px] py-8" style={{ color: "var(--text-muted)" }}>
+      <span
+        aria-hidden
+        className="inline-block h-3.5 w-3.5 rounded-full border-2 animate-spin"
+        style={{ borderColor: "var(--gridline)", borderTopColor: "var(--series-1)" }}
+      />
+      {label}…
+    </div>
+  );
+}
+
+export function ErrorNote({ error, hint }: { error: string; hint?: string }) {
+  return (
+    <div
+      className="card p-4 text-[13px]"
+      style={{ borderLeft: "3px solid var(--status-critical)" }}
+      role="alert"
+    >
+      <div className="font-semibold mb-1">Could not reach the engine service</div>
+      <div style={{ color: "var(--text-secondary)" }}>{error}</div>
+      <div className="mt-2" style={{ color: "var(--text-muted)" }}>
+        {hint ?? "Start the backend with: uvicorn app.main:app --reload --port 8000 (from backend/)"}
+      </div>
+    </div>
+  );
+}
