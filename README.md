@@ -1,6 +1,6 @@
 <p align="center">
   <img src="https://img.shields.io/badge/HackCelestial_3.0-PS_4-blue?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/Team-HPSA-purple?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/Team-VOID-purple?style=for-the-badge" />
   <img src="https://img.shields.io/badge/Next.js-15-black?style=for-the-badge&logo=next.js" />
   <img src="https://img.shields.io/badge/FastAPI-0.115-009688?style=for-the-badge&logo=fastapi" />
   <img src="https://img.shields.io/badge/Python-3.11-3776AB?style=for-the-badge&logo=python&logoColor=white" />
@@ -12,7 +12,7 @@
 
 Smart Resort 360 is an AI-powered resort operations platform that unifies demand forecasting, predictive maintenance, workforce optimization, and guest intelligence into a single decision layer. Every insight is surfaced as an **approvable action card** — AI recommends, the manager decides, the system executes, and the feedback loop makes the next batch sharper.
 
-Built for **HackCelestial 3.0 — Problem Statement 4** by **Team HPSA**.
+Built for **HackCelestial 3.0 — Problem Statement 4** by **Team VOID**.
 
 ---
 
@@ -340,7 +340,7 @@ This exercises: data spine → all 4 engines → action bus → approve → exec
 
 ---
 
-## 👥 Team HPSA
+## 👥 Team VOID
 
 Built with ❤️ for HackCelestial 3.0
 
@@ -348,4 +348,4 @@ Built with ❤️ for HackCelestial 3.0
 
 ## 📄 License
 
-This project was built for the HackCelestial 3.0 hackathon. All rights reserved by Team HPSA.
+This project was built for the HackCelestial 3.0 hackathon. All rights reserved by Team VOID.

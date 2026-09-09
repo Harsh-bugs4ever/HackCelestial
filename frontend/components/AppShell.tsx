@@ -32,7 +32,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     <div className="workspace-main">
       <header className="workspace-header"><div><span className="breadcrumb-parent">Workspace</span><span className="breadcrumb-slash">/</span><strong>{current?.label ?? "Resort operations"}</strong></div><span className="workspace-badge">Smart Resort 360 <span>· Operations console</span></span></header>
       <main id="main-content" tabIndex={-1} className="workspace-content">{children}</main>
-      <footer className="workspace-footer"><span>Smart Resort 360</span><span>Built by Team HPSA · HackCelestial 3.0</span></footer>
+      <footer className="workspace-footer"><span>Smart Resort 360</span><span>Built by Team VOID · HackCelestial 3.0</span></footer>
     </div>
   </div>;
 }
