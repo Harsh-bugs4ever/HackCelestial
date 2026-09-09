@@ -67,3 +67,18 @@ export function titleCase(s: string): string {
     .replace(/_/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
+
+/**
+ * Direction marker for a delta, for StatTile's delta/deltaGood pair.
+ *
+ * A zero delta returns neither: an up-arrow against "no change" reads as an
+ * improvement that did not happen. `epsilon` should match the precision the
+ * value is rendered at, so a delta that displays as 0 is not marked as a move.
+ */
+export function trend(
+  value: number,
+  epsilon = 0,
+): { delta?: string; deltaGood?: boolean } {
+  if (!Number.isFinite(value) || Math.abs(value) <= epsilon) return {};
+  return { delta: value > 0 ? "▲" : "▼", deltaGood: value > 0 };
+}

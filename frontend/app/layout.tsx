@@ -28,9 +28,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <header
             className="sticky top-0 z-20"
             style={{
-              background: "color-mix(in oklab, var(--page-plane) 82%, transparent)",
-              backdropFilter: "blur(16px) saturate(1.6)",
-              WebkitBackdropFilter: "blur(16px) saturate(1.6)",
+              background: "color-mix(in oklab, var(--page-plane) 74%, transparent)",
+              backdropFilter: "blur(20px) saturate(1.7)",
+              WebkitBackdropFilter: "blur(20px) saturate(1.7)",
               borderBottom: "1px solid var(--border)",
             }}
           >
@@ -38,9 +38,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <Link href="/" className="flex items-center gap-2.5 shrink-0 group">
                 <span
                   aria-hidden
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[13px] font-bold text-white shadow-sm"
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] text-[13px] font-bold text-white transition-transform duration-200 group-hover:scale-105"
                   style={{
                     background: "linear-gradient(135deg, var(--series-1), #1a5bb5)",
+                    boxShadow: "0 4px 14px var(--glow-1), inset 0 1px 0 rgba(255,255,255,0.28)",
                   }}
                 >
                   360
@@ -64,7 +65,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             className="mx-auto w-full max-w-[1400px] px-5 py-5 text-[12px]"
             style={{ color: "var(--text-muted)", borderTop: "1px solid var(--border)" }}
           >
-            Team HPSA · HackCelestial 3.0 · PS 4 — one data spine, four AI engines, an action layer on top.
+            <span style={{ color: "var(--text-secondary)", fontWeight: 500 }}>Team HPSA</span>
+            {" · HackCelestial 3.0 · PS 4 — one data spine, four AI engines, an action layer on top."}
           </footer>
         </div>
       </body>

@@ -179,30 +179,27 @@ export function ActionCardView({ card, onDecide, compact = false }: Props) {
           )}
         </div>
       ) : (
-        <div className="flex gap-2 pt-1">
+        <div className="flex items-center gap-2 pt-1">
           <button
-            className="flex-1 rounded-md px-3 py-2 text-[13px] font-semibold text-white disabled:opacity-50"
-            style={{ background: "var(--status-good)" }}
+            className="btn-approve px-5 py-2 text-[13px] disabled:opacity-50"
             disabled={busy !== null}
             onClick={() => act("approve")}
           >
             {busy === "approve" ? "Executing…" : "Approve"}
           </button>
           <button
-            className="rounded-md px-3 py-2 text-[13px] font-medium disabled:opacity-50"
-            style={{ border: "1px solid var(--border)", color: "var(--text-secondary)" }}
+            className="btn-ghost px-3 py-2 text-[13px] font-medium disabled:opacity-50"
             disabled={busy !== null}
             onClick={() => act("snooze")}
           >
-            Snooze
+            {busy === "snooze" ? "…" : "Snooze"}
           </button>
           <button
-            className="rounded-md px-3 py-2 text-[13px] font-medium disabled:opacity-50"
-            style={{ border: "1px solid var(--border)", color: "var(--text-secondary)" }}
+            className="btn-ghost px-3 py-2 text-[13px] font-medium disabled:opacity-50"
             disabled={busy !== null}
             onClick={() => act("dismiss")}
           >
-            Dismiss
+            {busy === "dismiss" ? "…" : "Dismiss"}
           </button>
         </div>
       )}

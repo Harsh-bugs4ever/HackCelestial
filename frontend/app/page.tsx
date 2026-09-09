@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { ActionCardView } from "@/components/ActionCardView";
+import { ResortHero } from "@/components/ResortHero";
 import { ErrorNote, Section, Spinner, StatTile, StatusPill } from "@/components/ui";
 import { API_BASE, api, type Dashboard } from "@/lib/api";
-import { inr, inrExact, pct, titleCase } from "@/lib/format";
+import { inr, pct, titleCase } from "@/lib/format";
 
 export default function DashboardPage() {
   const [data, setData] = useState<Dashboard | null>(null);
@@ -63,48 +64,16 @@ export default function DashboardPage() {
   if (error) return <ErrorNote error={error} />;
   if (!data) return <Spinner label="Loading the live dashboard" />;
 
-  const occ = data.occupancy;
-
   return (
     <div className="flex flex-col gap-7">
-      <div className="flex items-end justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{data.resort}</h1>
-          <p className="text-[13px]" style={{ color: "var(--text-secondary)" }}>
-            {new Date(data.date).toLocaleDateString("en-IN", {
-              weekday: "long",
-              day: "numeric",
-              month: "long",
-              year: "numeric",
-            })}
-            {" · "}
-            <span style={{ color: live ? "var(--status-good)" : "var(--text-muted)" }}>
-              {live ? "● live" : "○ polling"}
-            </span>
-          </p>
-        </div>
-        <button
-          onClick={runEngines}
-          disabled={running}
-          className="rounded-md px-3.5 py-2 text-[13px] font-semibold text-white disabled:opacity-50"
-          style={{ background: "var(--series-1)" }}
-        >
-          {running ? "Running engines…" : "Run all engines now"}
-        </button>
-      </div>
+      <ResortHero data={data} live={live} running={running} onRun={runEngines} />
 
       {/* Live status - occupancy, staffing gaps, open requests, equipment health */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <StatTile
-          label="Occupancy today"
-          value={pct(occ.pct)}
-          sub={`${occ.rooms_sold} of ${occ.rooms_available} rooms`}
-          accent="var(--series-1)"
-        />
-        <StatTile
-          label="ADR / RevPAR"
-          value={inrExact(occ.adr)}
-          sub={`RevPAR ${inrExact(occ.revpar)}`}
+          label="Arrivals today"
+          value={String(data.movements.arrivals)}
+          sub={`${data.movements.departures} departures`}
           accent="var(--series-1)"
         />
         <StatTile
@@ -118,6 +87,12 @@ export default function DashboardPage() {
           value={String(data.staffing.gaps)}
           sub={`${data.staffing.short_by} shifts short over 2 days`}
           accent="var(--engine-workforce)"
+        />
+        <StatTile
+          label="Guest sentiment"
+          value={data.sentiment.overall.toFixed(2)}
+          sub="mean across departments"
+          accent="var(--engine-maintenance)"
         />
       </div>
 

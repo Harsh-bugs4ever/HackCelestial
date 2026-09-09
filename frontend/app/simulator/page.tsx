@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ScenarioChart } from "@/components/charts";
 import { ErrorNote, Section, Spinner, StatTile } from "@/components/ui";
 import { api, type Simulation } from "@/lib/api";
-import { inr, pct } from "@/lib/format";
+import { inr, pct, trend } from "@/lib/format";
 
 export default function SimulatorPage() {
   const [rate, setRate] = useState(0);
@@ -104,16 +104,14 @@ export default function SimulatorPage() {
             <StatTile
               label="Revenue change"
               value={inr(sim.delta.revenue_inr)}
-              delta={sim.delta.revenue_inr >= 0 ? "▲" : "▼"}
-              deltaGood={sim.delta.revenue_inr >= 0}
+              {...trend(sim.delta.revenue_inr, 0.5)}
               sub={`over ${sim.horizon_days} days`}
               accent="var(--series-1)"
             />
             <StatTile
               label="Contribution change"
               value={inr(sim.delta.profit_inr)}
-              delta={sim.delta.profit_inr >= 0 ? "▲" : "▼"}
-              deltaGood={sim.delta.profit_inr >= 0}
+              {...trend(sim.delta.profit_inr, 0.5)}
               sub="after staff cost"
               accent="var(--series-2)"
             />
@@ -126,8 +124,7 @@ export default function SimulatorPage() {
             <StatTile
               label="Guest satisfaction"
               value={`${sim.delta.guest_satisfaction >= 0 ? "+" : ""}${sim.delta.guest_satisfaction.toFixed(2)}`}
-              delta={sim.delta.guest_satisfaction >= 0 ? "▲" : "▼"}
-              deltaGood={sim.delta.guest_satisfaction >= 0}
+              {...trend(sim.delta.guest_satisfaction, 0.005)}
               sub="service-load proxy"
               accent="var(--engine-guest)"
             />

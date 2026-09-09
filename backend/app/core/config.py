@@ -9,11 +9,19 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# ROOT is the backend package root - it anchors the default SQLite file, which
+# lives alongside the app (backend/resort360.db). REPO_ROOT is one level up and
+# is where .env actually sits. Both are checked for .env, repo root last so it
+# wins, so the stack picks up configuration from either location.
 ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = ROOT.parent
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=str(ROOT / ".env"), extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=(str(ROOT / ".env"), str(REPO_ROOT / ".env")),
+        extra="ignore",
+    )
 
     app_name: str = "Smart Resort 360"
     resort_name: str = "Celestial Bay Resort & Spa"

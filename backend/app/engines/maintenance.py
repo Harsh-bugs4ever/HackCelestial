@@ -271,7 +271,35 @@ def best_service_window(db: Session, within_days: int, today: dt.date) -> tuple[
     )
 
 
+# Assessing one asset fits an IsolationForest over its telemetry, which costs
+# well over a second. The dashboard, the asset detail route and the engine run
+# all assess the same assets for the same day, so memoise the computed part per
+# (asset, day) - mirroring _FORECAST_CACHE in demand.py.
+#
+# The Asset row is deliberately NOT cached: it belongs to the caller's session
+# and would raise DetachedInstanceError once that session closes. It is stripped
+# on the way in and re-attached from the caller's own object on the way out.
+_ASSESS_CACHE: dict[tuple[str, dt.date], dict | None] = {}
+
+
+def clear_assess_cache() -> None:
+    _ASSESS_CACHE.clear()
+
+
 def assess(db: Session, asset: Asset, today: dt.date) -> dict | None:
+    key = (asset.id, today)
+    if key in _ASSESS_CACHE:
+        cached = _ASSESS_CACHE[key]
+        return None if cached is None else {**cached, "asset": asset}
+
+    result = _assess_uncached(db, asset, today)
+    _ASSESS_CACHE[key] = (
+        None if result is None else {k: v for k, v in result.items() if k != "asset"}
+    )
+    return result
+
+
+def _assess_uncached(db: Session, asset: Asset, today: dt.date) -> dict | None:
     df = _telemetry(db, asset.id)
     if df.empty:
         return None

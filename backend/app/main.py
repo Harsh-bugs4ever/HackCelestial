@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 from app.api.routes import card_json, router
 from app.core.config import settings
 from app.core.db import SessionLocal, init_db
+from app.engines import maintenance, workforce
 from app.models import ActionCard
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -84,6 +85,30 @@ async def _watch_actions() -> None:
         await asyncio.sleep(4)
 
 
+async def _warm_caches() -> None:
+    """Pay the cold model cost at boot, not on the first page load.
+
+    An asset assessment fits an IsolationForest and the roster needs a Prophet
+    fit; cold, that is ~25s on the first /api/dashboard call. Both engines
+    memoise per day, so touching them once here means the dashboard opens warm.
+    Runs in a worker thread so it never blocks the event loop or startup.
+    """
+    def work() -> None:
+        db = SessionLocal()
+        try:
+            maintenance.health_board(db)
+            workforce.staffing_gaps(db, days=2)
+        finally:
+            db.close()
+
+    try:
+        await asyncio.to_thread(work)
+        log.info("engine caches warm - dashboard will answer immediately")
+    except Exception as exc:
+        # a cold cache only costs latency, never correctness
+        log.warning("cache warm-up skipped: %s", exc)
+
+
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     init_db()
@@ -94,12 +119,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         db.close()
     task = asyncio.create_task(_watch_actions())
+    warm = asyncio.create_task(_warm_caches())
     try:
         yield
     finally:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        for t in (task, warm):
+            t.cancel()
+        for t in (task, warm):
+            with contextlib.suppress(asyncio.CancelledError):
+                await t
 
 
 app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)
