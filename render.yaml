@@ -2,16 +2,25 @@ services:
   - type: web
     name: smart-resort-360-api
     runtime: python
+    plan: free
     region: singapore
     rootDir: backend
+    healthCheckPath: /health
+    # Seeding at build time bakes the SQLite demo dataset into the instance image.
     buildCommand: pip install -r requirements.txt && python -m app.seed.generate
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    # One worker: the free instance has 512MB and the WebSocket hub is in-process,
+    # so a second worker would fan out to only half the connected dashboards.
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
+      # Empty -> the broker check fails instantly and Celery runs eager in-process.
       - key: REDIS_URL
         value: ""
       - key: LLM_MODEL
         value: "claude-opus-5"
       - key: FORECAST_HORIZON_DAYS
         value: "30"
+      # Set in the Render dashboard. Unset -> grounded extractive fallback.
+      - key: ANTHROPIC_API_KEY
+        sync: false

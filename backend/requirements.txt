@@ -1,7 +1,10 @@
+# Render free-tier runtime set. Everything here installs from wheels in ~2 min.
+# The heavy ML stack lives in requirements-ml.txt - every one of those imports is
+# lazy and try/except-guarded, so the API runs fully without them (forecasting
+# falls back to seasonal-naive, guest search to extractive matching).
 fastapi>=0.115
 uvicorn[standard]>=0.34
 sqlalchemy>=2.0.36
-alembic>=1.14
 psycopg[binary]>=3.2.10
 pydantic>=2.10
 pydantic-settings>=2.7
@@ -11,12 +14,5 @@ redis>=5.2
 pandas
 numpy
 scikit-learn
-xgboost
-lightgbm
-statsmodels
-prophet
-ortools
-faiss-cpu
-sentence-transformers
 httpx>=0.28
 websockets>=14

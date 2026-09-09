@@ -129,7 +129,6 @@ HackCelestial/
 │   │   ├── api.ts               # API client + TypeScript types
 │   │   ├── format.ts            # Number formatting (INR, %, etc.)
 │   │   └── useLiveData.ts       # SWR-like hook with stale-while-revalidate
-│   ├── netlify.toml             # Netlify deployment config
 │   └── package.json
 │
 ├── backend/                     # FastAPI Python backend
@@ -152,11 +151,13 @@ HackCelestial/
 │   │       └── generate.py      # 2-year realistic data generator
 │   ├── scripts/
 │   │   └── smoke.py             # End-to-end smoke test
-│   ├── requirements.txt
+│   ├── requirements.txt         # Light runtime set (Render free tier)
+│   ├── requirements-ml.txt      # + heavy ML stack (local / paid instance)
 │   ├── Procfile                 # Render start command
 │   └── runtime.txt              # Python version for Render
 │
-├── render.yaml                  # Render IaC blueprint
+├── netlify.toml                 # Netlify deployment config
+├── render.yaml                  # Render blueprint (free tier)
 ├── .env.example                 # Environment variable template
 └── .gitignore
 ```
@@ -190,8 +191,12 @@ python -m venv venv
 # macOS/Linux
 source venv/bin/activate
 
-# Install dependencies
-pip install -r requirements.txt
+# Install dependencies (full ML stack: Prophet, XGBoost, OR-Tools, FAISS, MiniLM)
+pip install -r requirements-ml.txt
+
+# ...or just the light runtime set, if you don't need the ML engines.
+# The engines then log a warning and use their fallbacks - see Deployment.
+# pip install -r requirements.txt
 
 # Seed the database (generates 2 years of realistic resort data)
 python -m app.seed.generate
@@ -227,32 +232,69 @@ The frontend runs at `http://localhost:3000`.
 
 ## ☁️ Deployment
 
-### Backend → Render
+### Backend → Render (free tier)
+
+The repo ships `render.yaml`, so the fastest path is a Blueprint:
 
 1. Push the repo to GitHub
-2. Go to [render.com](https://render.com) → **New** → **Web Service**
-3. Connect your GitHub repo
-4. Set:
-   - **Root Directory**: `backend`
-   - **Runtime**: Python 3
-   - **Build Command**: `pip install -r requirements.txt`
-   - **Start Command**: `python -m app.seed.generate && uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-5. Add environment variables (see table below)
-6. Deploy — note your service URL (e.g. `https://smart-resort-360-api.onrender.com`)
+2. Go to [render.com](https://render.com) → **New** → **Blueprint**
+3. Connect the repo — Render reads `render.yaml` and pre-fills everything
+4. Set `ANTHROPIC_API_KEY` when prompted (optional — unset means the extractive fallback)
+5. Deploy — note your service URL (e.g. `https://smart-resort-360-api.onrender.com`)
 
-> **Note**: Render's free tier uses ephemeral disk — the SQLite database resets on each deploy. The start command re-seeds automatically. For persistent data, use Render's managed PostgreSQL and set `DATABASE_URL`.
+To wire it up by hand instead, use **New** → **Web Service** with:
+
+- **Root Directory**: `backend`
+- **Runtime**: Python 3
+- **Build Command**: `pip install -r requirements.txt && python -m app.seed.generate`
+- **Start Command**: `uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1`
+- **Health Check Path**: `/health`
+
+#### Why `requirements.txt` is the light set
+
+`requirements.txt` holds only what the API needs to boot (FastAPI, SQLAlchemy,
+pandas, numpy, scikit-learn) and installs from wheels in ~2 minutes. The heavy ML
+stack lives in **`requirements-ml.txt`** — `sentence-transformers` alone pulls
+PyTorch (~2.5GB), which will not build or fit in the free tier's 512MB.
+
+Every one of those imports is lazy and `try`/`except`-guarded, so the deployed API
+is fully functional without them; the affected engines log a warning and degrade:
+
+| Missing package | Engine | Falls back to |
+|---|---|---|
+| `prophet` | demand | seasonal-naive baseline |
+| `xgboost` | demand | prophet/naive leg only |
+| `lightgbm` | maintenance | trend + anomaly rules |
+| `ortools` | workforce | greedy scheduler |
+| `faiss-cpu` | guest | numpy cosine search |
+| `sentence-transformers` | guest | hashed bag-of-words |
+
+For the full stack locally (or on a paid instance with ≥2GB RAM):
+
+```bash
+pip install -r requirements-ml.txt
+```
+
+> **Note**: Render's free tier uses ephemeral disk. The build command seeds SQLite
+> into the instance image, so the demo data is present on boot and resets on each
+> deploy. Free instances also sleep after ~15 min idle — the first request back
+> takes ~50s to wake. For persistent data, add Render's managed PostgreSQL and set
+> `DATABASE_URL`.
 
 ### Frontend → Netlify
 
+The root `netlify.toml` already sets the base, publish dir, and Next.js plugin.
+
 1. Go to [netlify.com](https://netlify.com) → **Add new site** → **Import from Git**
-2. Connect your GitHub repo
-3. Set:
-   - **Base directory**: `frontend`
-   - **Build command**: `npm run build`
-   - **Publish directory**: `frontend/.next`
-4. Add environment variable:
-   - `NEXT_PUBLIC_API_BASE` = your Render backend URL (e.g. `https://smart-resort-360-api.onrender.com`)
-5. Deploy
+2. Connect the repo — `netlify.toml` supplies the build settings
+3. Add the environment variable **before** the first build:
+   - `NEXT_PUBLIC_API_BASE` = your Render URL (e.g. `https://smart-resort-360-api.onrender.com`)
+4. Deploy
+
+> **Important**: `NEXT_PUBLIC_API_BASE` is inlined at build time, not read at
+> runtime. If you change it, trigger a fresh deploy — a redeploy of the existing
+> build will keep the old value. The same value drives the WebSocket URL
+> (`https` → `wss`), and the backend's CORS rule already allows `*.netlify.app`.
 
 ---
 

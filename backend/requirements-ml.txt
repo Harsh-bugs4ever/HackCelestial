@@ -1,0 +1,12 @@
+# Full ML stack - local development and any paid instance with >=2GB RAM.
+#   pip install -r requirements-ml.txt
+# Omitting these is safe: each engine degrades to a documented fallback.
+-r requirements.txt
+
+prophet          # demand.py  -> seasonal-naive fallback
+xgboost          # demand.py  -> prophet-only fallback
+lightgbm         # maintenance.py -> trend+anomaly rules fallback
+ortools          # workforce.py   -> greedy scheduler fallback
+faiss-cpu        # guest.py -> numpy dot-product fallback
+sentence-transformers  # guest.py -> extractive keyword fallback (pulls torch, ~2.5GB)
+statsmodels
