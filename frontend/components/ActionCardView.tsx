@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
+import { EASE_OUT, GrowBar } from "@/components/motion";
 import type { ActionCard } from "@/lib/api";
 import {
   ENGINE_COLOR,
@@ -46,10 +48,18 @@ export function ActionCardView({ card, onDecide, compact = false }: Props) {
   }
 
   return (
-    <article
+    <motion.article
+      layout
       className="card p-4 flex flex-col gap-3"
       style={{ borderLeft: `3px solid ${ENGINE_COLOR[card.engine]}` }}
       aria-label={card.title}
+      aria-busy={busy !== null}
+      initial={{ opacity: 0, y: 14, scale: 0.985 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      /* A decided card slides out of the queue rather than blinking away, so
+         the operator can see which one they just acted on. */
+      exit={{ opacity: 0, x: 28, scale: 0.97, transition: { duration: 0.24, ease: EASE_OUT } }}
+      transition={{ duration: 0.42, ease: EASE_OUT }}
     >
       <header className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -138,8 +148,15 @@ export function ActionCardView({ card, onDecide, compact = false }: Props) {
             {showWhy ? "Hide" : "Why this recommendation?"}
           </button>
 
+          <AnimatePresence initial={false}>
           {showWhy && (
-            <ul className="mt-2 flex flex-col gap-1.5">
+            <motion.ul
+              className="mt-2 flex flex-col gap-1.5 overflow-hidden"
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.3, ease: EASE_OUT }}
+            >
               {card.why.map((d, i) => (
                 <li key={i} className="flex items-start gap-2 text-[12.5px]">
                   <span
@@ -155,13 +172,17 @@ export function ActionCardView({ card, onDecide, compact = false }: Props) {
                   </span>
                 </li>
               ))}
-            </ul>
+            </motion.ul>
           )}
+          </AnimatePresence>
         </div>
       )}
 
       {decided ? (
-        <div
+        <motion.div
+          layout
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
           className="text-[12.5px] rounded-md px-3 py-2"
           style={{
             background: "color-mix(in oklab, var(--status-good) 10%, transparent)",
@@ -177,9 +198,9 @@ export function ActionCardView({ card, onDecide, compact = false }: Props) {
               {card.execution_result.message as string}
             </div>
           )}
-        </div>
+        </motion.div>
       ) : (
-        <div className="flex items-center gap-2 pt-1">
+        <motion.div layout className="flex items-center gap-2 pt-1">
           <button
             className="btn-approve px-5 py-2 text-[13px] disabled:opacity-50"
             disabled={busy !== null}
@@ -201,9 +222,9 @@ export function ActionCardView({ card, onDecide, compact = false }: Props) {
           >
             {busy === "dismiss" ? "…" : "Dismiss"}
           </button>
-        </div>
+        </motion.div>
       )}
-    </article>
+    </motion.article>
   );
 }
 
@@ -214,17 +235,15 @@ function ConfidenceMeter({ value }: { value: number }) {
         className="inline-block h-1.5 w-14 rounded-full overflow-hidden"
         style={{ background: "var(--gridline)" }}
       >
-        <span
-          className="block h-full rounded-full"
-          style={{
-            width: `${Math.round(value * 100)}%`,
-            background:
-              value >= 0.75
-                ? "var(--status-good)"
-                : value >= 0.55
-                  ? "var(--status-warning)"
-                  : "var(--status-serious)",
-          }}
+        <GrowBar
+          fraction={value}
+          color={
+            value >= 0.75
+              ? "var(--status-good)"
+              : value >= 0.55
+                ? "var(--status-warning)"
+                : "var(--status-serious)"
+          }
         />
       </span>
       <span className="tabular">{pct(value)} confidence</span>

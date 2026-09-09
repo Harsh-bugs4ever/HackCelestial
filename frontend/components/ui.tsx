@@ -1,6 +1,8 @@
 "use client";
 
 import type { ReactNode } from "react";
+import { motion } from "motion/react";
+import { EASE_OUT } from "@/components/motion";
 
 /** A stat tile: one number, its label, an optional delta. Not a chart. */
 export function StatTile({
@@ -12,18 +14,24 @@ export function StatTile({
   accent,
 }: {
   label: string;
-  value: string;
+  /** ReactNode so a caller can pass <AnimatedNumber/> for a figure that ticks. */
+  value: ReactNode;
   sub?: string;
   delta?: string;
   deltaGood?: boolean;
   accent?: string;
 }) {
   return (
-    <div className="card p-4 flex flex-col gap-1" style={accent ? { borderTop: `2px solid ${accent}` } : undefined}>
+    <motion.div
+      className="card p-4 flex flex-col gap-1"
+      style={accent ? { borderTop: `2px solid ${accent}` } : undefined}
+      whileHover={{ y: -2 }}
+      transition={{ duration: 0.25, ease: EASE_OUT }}
+    >
       <div className="text-[12px] uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>
         {label}
       </div>
-      <div className="text-2xl font-semibold leading-tight">{value}</div>
+      <div className="text-2xl font-semibold leading-tight tabular">{value}</div>
       <div className="flex items-center gap-2 text-[12px]" style={{ color: "var(--text-secondary)" }}>
         {delta && (
           <span
@@ -35,7 +43,7 @@ export function StatTile({
         )}
         {sub && <span>{sub}</span>}
       </div>
-    </div>
+    </motion.div>
   );
 }
 
@@ -96,6 +104,40 @@ export function Spinner({ label = "Loading" }: { label?: string }) {
       />
       {label}…
     </div>
+  );
+}
+
+/**
+ * Shown above still-valid data when a background refresh fails. The dashboard
+ * repolls every 20s; blanking a working screen because one poll timed out lost
+ * the operator their context, so a stale screen now says it is stale instead.
+ */
+export function StaleBanner({ error, onRetry }: { error: string; onRetry?: () => void }) {
+  return (
+    <motion.div
+      role="status"
+      className="card px-4 py-2.5 text-[12.5px] flex items-center gap-3 flex-wrap"
+      style={{ borderLeft: "3px solid var(--status-warning)" }}
+      initial={{ opacity: 0, y: -8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8 }}
+      transition={{ duration: 0.28, ease: EASE_OUT }}
+    >
+      <span style={{ color: "var(--text-primary)" }} className="font-medium">
+        Showing the last good data — the latest refresh failed.
+      </span>
+      <span style={{ color: "var(--text-muted)" }} className="truncate">
+        {error}
+      </span>
+      {onRetry && (
+        <button
+          onClick={onRetry}
+          className="btn-ghost ml-auto px-2.5 py-1 text-[12px] font-medium"
+        >
+          Retry now
+        </button>
+      )}
+    </motion.div>
   );
 }
 

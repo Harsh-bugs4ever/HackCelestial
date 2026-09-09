@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import "./globals.css";
 import { NavLink } from "@/components/NavLink";
+import { MotionProvider } from "@/components/motion";
+import { PageTransition } from "@/components/PageTransition";
 
 export const metadata: Metadata = {
   title: "Smart Resort 360",
@@ -24,6 +26,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body>
+        <MotionProvider>
         <div className="min-h-screen flex flex-col">
           <header
             className="sticky top-0 z-20"
@@ -59,7 +62,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </div>
           </header>
 
-          <main className="mx-auto w-full max-w-[1400px] px-5 py-6 flex-1">{children}</main>
+          <main className="mx-auto w-full max-w-[1400px] px-5 py-6 flex-1">
+            <PageTransition>{children}</PageTransition>
+          </main>
 
           <footer
             className="mx-auto w-full max-w-[1400px] px-5 py-5 text-[12px]"
@@ -69,6 +74,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             {" · HackCelestial 3.0 · PS 4 — one data spine, four AI engines, an action layer on top."}
           </footer>
         </div>
+        </MotionProvider>
       </body>
     </html>
   );
