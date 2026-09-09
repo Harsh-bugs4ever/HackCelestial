@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from threading import Lock
 from typing import Any
 
 import numpy as np
@@ -35,33 +36,35 @@ ENGINES = {
 }
 
 
+_RUN_LOCKS = {name: Lock() for name in ENGINES}
+
+
 def run_engine(db: Session, name: str, today: dt.date | None = None) -> dict[str, Any]:
-    module = ENGINES[name]
-    run = EngineRun(engine=name, started_at=utcnow())
-    db.add(run)
-    db.flush()
+    # Collapse overlapping scheduled/manual runs within this worker process.
+    lock = _RUN_LOCKS[name]
+    if not lock.acquire(blocking=False):
+        return {"engine": name, "ok": False, "busy": True,
+                "error": "This engine is already running. Please retry shortly."}
+    started = utcnow()
     try:
-        proposals = module.run(db, today)
+        # Do not INSERT/flush a run record before expensive read-only model work:
+        # SQLite otherwise holds its only writer slot throughout every fit.
+        proposals = ENGINES[name].run(db, today)
         cards = bus.publish(db, proposals)
-        run.cards_emitted = len(cards)
-        run.ok = True
+        db.add(EngineRun(engine=name, started_at=started, finished_at=utcnow(),
+                         cards_emitted=len(cards), ok=True))
         db.commit()
         return {"engine": name, "ok": True, "cards": len(cards),
                 "titles": [c.title for c in cards]}
     except Exception as exc:
         db.rollback()
-        # re-attach a fresh failure record; the rollback discarded the first
-        db.add(EngineRun(engine=name, started_at=run.started_at, finished_at=utcnow(),
+        db.add(EngineRun(engine=name, started_at=started, finished_at=utcnow(),
                          cards_emitted=0, ok=False, error=str(exc)))
         db.commit()
         log.exception("engine %s failed", name)
         return {"engine": name, "ok": False, "error": str(exc)}
     finally:
-        run.finished_at = utcnow()
-        try:
-            db.commit()
-        except Exception:
-            db.rollback()
+        lock.release()
 
 
 def run_all(db: Session, today: dt.date | None = None) -> list[dict[str, Any]]:

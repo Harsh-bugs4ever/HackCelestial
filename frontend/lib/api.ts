@@ -166,9 +166,13 @@ export type LearningSummary = {
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (init?.body && !headers.has("content-type")) {
+    headers.set("content-type", "application/json");
+  }
   const res = await fetch(`${API_BASE}/api${path}`, {
     ...init,
-    headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
+    headers,
     cache: "no-store",
   });
   if (!res.ok) {
@@ -195,11 +199,17 @@ export const api = {
   history: () =>
     request<{ count: number; cards: ActionCard[] }>("/actions-feed/history"),
 
-  runEngines: (engine?: string) =>
-    request<{ results: { engine: string; ok: boolean; cards?: number }[] }>(
-      `/engines/run${engine ? `?engine=${engine}` : ""}`,
+  runEngines: async (engine?: string) => {
+    const result = await request<{ results: { engine: string; ok: boolean; cards?: number; error?: string }[] }>(
+      `/engines/run${engine ? `?engine=${encodeURIComponent(engine)}` : ""}`,
       { method: "POST" },
-    ),
+    );
+    const failed = result.results.filter((run) => !run.ok);
+    if (failed.length) {
+      throw new Error(failed.map((run) => `${run.engine}: ${run.error ?? "Run failed"}`).join("; "));
+    }
+    return result;
+  },
 
   engineStatus: () =>
     request<

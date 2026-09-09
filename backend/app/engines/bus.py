@@ -13,7 +13,7 @@ import datetime as dt
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from sqlalchemy import select
+from sqlalchemy import case, select, update
 from sqlalchemy.orm import Session
 
 from app.models import ActionCard, DecisionLog, utcnow
@@ -90,22 +90,25 @@ def publish(db: Session, proposals: list[Proposal]) -> list[ActionCard]:
     """
     published: list[ActionCard] = []
     now = utcnow()
-    for p in proposals:
-        card = p.to_card()
-        stale = db.scalars(
-            select(ActionCard).where(
-                ActionCard.dedupe_key == card.dedupe_key,
-                ActionCard.status.in_(("pending", "snoozed")),
-            )
-        ).all()
+    # Deduplicate a batch before querying; keep the latest proposal for each key.
+    incoming = {card.dedupe_key: card for card in (p.to_card() for p in proposals)}
+    if not incoming:
+        return []
+    existing: dict[str, list[ActionCard]] = {}
+    for old in db.scalars(select(ActionCard).where(
+        ActionCard.dedupe_key.in_(incoming),
+        ActionCard.status.in_(("pending", "snoozed")),
+    )):
+        existing.setdefault(old.dedupe_key, []).append(old)
+    for key, card in incoming.items():
+        stale = existing.get(key, [])
+        if any(old.status == "snoozed" and old.snooze_until and old.snooze_until > now for old in stale):
+            continue
         for old in stale:
-            if old.status == "snoozed" and old.snooze_until and old.snooze_until > now:
-                # respect an active snooze - do not nag the manager again yet
-                break
-            db.delete(old)
-        else:
-            db.add(card)
-            published.append(card)
+            # Keep IDs referenced by decision logs, including expired snoozes.
+            old.status = "superseded"
+        db.add(card)
+        published.append(card)
     db.flush()
     return published
 
@@ -131,46 +134,61 @@ def _log_decision(db: Session, card: ActionCard, decision: str, by: str) -> None
     )
 
 
+class DecisionConflict(ValueError):
+    """Another decision has already changed this recommendation."""
+
+
+def _claim(db: Session, card: ActionCard, status: str, by: str) -> bool:
+    # Conditional UPDATE is atomic across threads and worker processes.
+    result = db.execute(update(ActionCard).where(
+        ActionCard.id == card.id,
+        ActionCard.status.in_(("pending", "snoozed") if status != "snoozed" else ("pending",)),
+    ).values(status=status, decided_at=utcnow(), decided_by=by,
+             snooze_until=None).execution_options(synchronize_session=False))
+    db.refresh(card)
+    if result.rowcount:
+        return True
+    if card.status == status or (status == "approved" and card.status == "executed"):
+        return False  # Retry of a completed decision: no second execution/log.
+    raise DecisionConflict(f"This recommendation is already {card.status}. Refresh the action queue.")
+
+
 def approve(db: Session, card: ActionCard, by: str = "manager") -> ActionCard:
-    """AI recommends, human decides, system executes (slide 3, steps 5-6)."""
-    if card.status in ("approved", "executed"):
+    """Claim once, then isolate execution so failure cannot commit partial work."""
+    if not _claim(db, card, "approved", by):
         return card
-
-    card.status = "approved"
-    card.decided_at = utcnow()
-    card.decided_by = by
     _log_decision(db, card, "approved", by)
-
     fn = _EXECUTORS.get(card.kind)
     if fn is None:
         card.execution_result = {"ok": False, "error": f"no executor registered for '{card.kind}'"}
     else:
         try:
-            card.execution_result = fn(db, card)
+            with db.begin_nested():
+                result = fn(db, card)
+                if not result.get("ok"):
+                    raise ValueError(result.get("error", "Executor did not confirm success"))
+                db.flush()
+            card.execution_result = result
             card.status = "executed"
             card.executed_at = utcnow()
-        except Exception as exc:  # an engine bug must not lose the approval
+        except Exception as exc:
             card.execution_result = {"ok": False, "error": str(exc)}
     db.flush()
     return card
 
 
 def snooze(db: Session, card: ActionCard, hours: int = 24, by: str = "manager") -> ActionCard:
-    card.status = "snoozed"
-    card.decided_at = utcnow()
-    card.decided_by = by
-    card.snooze_until = utcnow() + dt.timedelta(hours=hours)
-    _log_decision(db, card, "snoozed", by)
-    db.flush()
+    if _claim(db, card, "snoozed", by):
+        card.snooze_until = utcnow() + dt.timedelta(hours=hours)
+        _log_decision(db, card, "snoozed", by)
+        db.flush()
     return card
 
 
 def dismiss(db: Session, card: ActionCard, by: str = "manager") -> ActionCard:
-    card.status = "dismissed"
-    card.decided_at = utcnow()
-    card.decided_by = by
-    _log_decision(db, card, "dismissed", by)
-    db.flush()
+    if _claim(db, card, "dismissed", by):
+        _log_decision(db, card, "dismissed", by)
+        db.flush()
     return card
 
 
@@ -198,3 +216,9 @@ def rank(cards: list[ActionCard]) -> list[ActionCard]:
         cards,
         key=lambda c: (URGENCY_RANK.get(c.urgency, 2), -(c.impact_inr * c.confidence)),
     )
+
+
+def rank_order():
+    """SQL equivalent of rank(), applied before LIMIT so urgent cards cannot vanish."""
+    return (case(URGENCY_RANK, value=ActionCard.urgency, else_=2),
+            (ActionCard.impact_inr * ActionCard.confidence).desc(), ActionCard.id.desc())

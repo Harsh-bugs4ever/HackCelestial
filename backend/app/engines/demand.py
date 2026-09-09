@@ -19,6 +19,7 @@ import pandas as pd
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.cache import ModelCache
 from app.core.config import settings
 from app.engines.bus import Driver, Proposal, executor
 from app.models import (
@@ -260,8 +261,9 @@ def forecast_category(
 
 # A Prophet fit costs seconds, and four engines plus the simulator all ask for
 # the same forecast within one orchestration pass. Cache per (day, horizon) so a
-# full run fits inside a demo, and clear it whenever the underlying data moves.
-_FORECAST_CACHE: dict[tuple[dt.date, int], dict[str, pd.DataFrame]] = {}
+# full run shares a model fit. Entries expire after five minutes, are bounded,
+# and are scoped to a database; importers can also invalidate them explicitly.
+_FORECAST_CACHE = ModelCache[dict[str, pd.DataFrame]](maxsize=8, ttl=300)
 
 
 def clear_forecast_cache() -> None:
@@ -275,12 +277,11 @@ def forecast_all(db: Session, today: dt.date | None = None, horizon: int | None 
     # caller uses and slice, so a shorter request is a cache hit rather than a
     # second Prophet fit.
     canonical = max(horizon, settings.forecast_horizon_days)
-    key = (today, canonical)
-    full = _FORECAST_CACHE.get(key)
-    if full is None:
+    key = (db.get_bind(), today, canonical)
+    def compute():
         cats = db.scalars(select(RoomCategory)).all()
-        full = {c.id: forecast_category(db, c, today, canonical) for c in cats}
-        _FORECAST_CACHE[key] = full
+        return {c.id: forecast_category(db, c, today, canonical) for c in cats}
+    full = _FORECAST_CACHE.get(key, compute)
     return {cid: df.head(horizon).copy() for cid, df in full.items()}
 
 

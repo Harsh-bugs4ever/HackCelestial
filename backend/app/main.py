@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from app.api.routes import card_json, router
 from app.core.config import settings
 from app.core.db import SessionLocal, init_db
-from app.engines import maintenance, workforce
+from app.engines import bus, maintenance, workforce
 from app.models import ActionCard
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -38,48 +38,42 @@ class Hub:
             self.clients.discard(ws)
 
     async def broadcast(self, payload: dict) -> None:
-        dead = []
-        for ws in list(self.clients):
+        message = json.dumps(payload)
+        async def send(ws: WebSocket) -> None:
             try:
-                await ws.send_text(json.dumps(payload))
+                await asyncio.wait_for(ws.send_text(message), timeout=2)
             except Exception:
-                dead.append(ws)
-        for ws in dead:
-            await self.leave(ws)
+                await self.leave(ws)
+        await asyncio.gather(*(send(ws) for ws in tuple(self.clients)))
 
 
 hub = Hub()
 
 
-async def _watch_actions() -> None:
-    """Push new pending cards to connected dashboards.
+def _pending_snapshot(seen: set[int]) -> tuple[set[int], list[dict]]:
+    # The session lives and closes entirely in the worker thread, never over an await.
+    with SessionLocal() as db:
+        if bus.wake_snoozed(db):
+            db.commit()
+        current = set(db.scalars(select(ActionCard.id).where(ActionCard.status == "pending")))
+        fresh = []
+        if current - seen:
+            fresh = [card_json(c) for c in db.scalars(select(ActionCard)
+                     .where(ActionCard.id.in_(current - seen)))]
+        return current, fresh
 
-    Polling the action table keeps the gateway independent of the broker - the
-    dashboard stays live whether Celery is running or an engine was triggered
-    by hand from the UI.
-    """
+
+async def _watch_actions() -> None:
+    """Publish additions and removals without blocking HTTP or socket heartbeats."""
     seen: set[int] = set()
     first_pass = True
     while True:
         try:
-            db = SessionLocal()
-            try:
-                cards = db.scalars(
-                    select(ActionCard).where(ActionCard.status == "pending")
-                ).all()
-                current = {c.id for c in cards}
-                new = current - seen
-                if new and not first_pass:
-                    fresh = [c for c in cards if c.id in new]
-                    await hub.broadcast({
-                        "type": "actions.new",
-                        "cards": [card_json(c) for c in fresh],
-                        "pending_total": len(current),
-                    })
-                seen = current
-                first_pass = False
-            finally:
-                db.close()
+            current, fresh = await asyncio.to_thread(_pending_snapshot, seen)
+            if current != seen and not first_pass:
+                await hub.broadcast({"type": "actions.new", "cards": fresh,
+                                     "pending_total": len(current)})
+            seen, first_pass = current, False
         except Exception as exc:
             log.warning("action watcher: %s", exc)
         await asyncio.sleep(4)
@@ -89,8 +83,8 @@ async def _warm_caches() -> None:
     """Pay the cold model cost at boot, not on the first page load.
 
     An asset assessment fits an IsolationForest and the roster needs a Prophet
-    fit; cold, that is ~25s on the first /api/dashboard call. Both engines
-    memoise per day, so touching them once here means the dashboard opens warm.
+    fit; cold, both can take several seconds. Both engines cache results for
+    five minutes and share in-flight computations with arriving requests.
     Runs in a worker thread so it never blocks the event loop or startup.
     """
     def work() -> None:

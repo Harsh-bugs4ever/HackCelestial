@@ -37,6 +37,8 @@ def init_db() -> None:
     from app import models  # noqa: F401  (register mappers)
 
     Base.metadata.create_all(bind=engine)
+    for index in models.PERFORMANCE_INDEXES:
+        index.create(bind=engine, checkfirst=True)
     if settings.timescale_enabled and not settings.is_sqlite:
         with engine.begin() as conn:
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS timescaledb"))

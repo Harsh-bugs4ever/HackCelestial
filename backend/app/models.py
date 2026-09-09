@@ -415,3 +415,14 @@ class EngineRun(Base, TimestampMixin):
     cards_emitted: Mapped[int] = mapped_column(Integer, default=0)
     ok: Mapped[bool] = mapped_column(Boolean, default=True)
     error: Mapped[str] = mapped_column(Text, default="")
+
+
+# Also installed on existing databases by init_db (create_all only handles new tables).
+PERFORMANCE_INDEXES = (
+    Index("ix_engine_run_latest", EngineRun.engine, EngineRun.started_at, EngineRun.id),
+    Index("ix_action_status_created", ActionCard.status, ActionCard.created_at),
+    Index("ix_booking_checkout", Booking.check_out),
+    Index("ix_booking_guest", Booking.guest_id),
+    Index("ix_review_guest", Review.guest_id),
+    Index("ix_request_resolved_department", ServiceRequest.resolved_at, ServiceRequest.department),
+)

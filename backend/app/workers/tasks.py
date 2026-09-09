@@ -15,7 +15,8 @@ def run_engine(name: str) -> dict:
     db = SessionLocal()
     try:
         result = orchestrator.run_engine(db, name)
-        orchestrator.apply_learning(db)
+        if result["ok"]:
+            orchestrator.apply_learning(db)
         return result
     finally:
         db.close()
@@ -26,7 +27,8 @@ def run_all_engines() -> list[dict]:
     db = SessionLocal()
     try:
         results = orchestrator.run_all(db)
-        orchestrator.apply_learning(db)
+        if any(result["ok"] for result in results):
+            orchestrator.apply_learning(db)
         return results
     finally:
         db.close()

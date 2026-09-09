@@ -15,7 +15,7 @@ import datetime as dt
 import logging
 import math
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.engines.bus import Driver, Proposal, executor
@@ -250,13 +250,11 @@ def _greedy_roster(staff, req, days, on_leave) -> tuple[list[dict], dict]:
 
 
 def current_coverage(db: Session, days: list[dt.date]) -> dict[tuple[dt.date, str, str], int]:
-    rows = db.scalars(
-        select(ShiftAssignment).where(ShiftAssignment.date.in_(days))
-    ).all()
-    out: dict[tuple[dt.date, str, str], int] = {}
-    for r in rows:
-        out[(r.date, r.slot, r.role)] = out.get((r.date, r.slot, r.role), 0) + 1
-    return out
+    rows = db.execute(select(ShiftAssignment.date, ShiftAssignment.slot,
+                             ShiftAssignment.role, func.count())
+        .where(ShiftAssignment.date.in_(days), ShiftAssignment.staff_id.is_not(None))
+        .group_by(ShiftAssignment.date, ShiftAssignment.slot, ShiftAssignment.role)).all()
+    return {(day, slot, role): count for day, slot, role, count in rows}
 
 
 def staffing_gaps(db: Session, today: dt.date | None = None, days: int = 3) -> list[dict]:

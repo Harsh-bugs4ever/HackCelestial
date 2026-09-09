@@ -103,7 +103,9 @@ def department_sentiment(db: Session, today: dt.date, window: int = 10, baseline
     recent_since = dt.datetime.combine(today - dt.timedelta(days=window), dt.time.min)
     base_since = dt.datetime.combine(today - dt.timedelta(days=baseline), dt.time.min)
 
-    rows = db.scalars(select(Review).where(Review.posted_at >= base_since)).all()
+    rows = db.execute(select(Review.department, Review.sentiment, Review.text,
+                             Review.rating, Review.posted_at)
+                      .where(Review.posted_at >= base_since)).all()
     if not rows:
         return {}
 

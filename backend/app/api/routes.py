@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -80,17 +80,20 @@ def dashboard(db: Session = Depends(get_db)) -> dict[str, Any]:
     ).one()
     sold, available, room_rev, fnb_rev = (x or 0 for x in occ_rows)
 
-    open_requests = db.scalars(
-        select(ServiceRequest).where(ServiceRequest.resolved_at.is_(None))
-    ).all()
+    request_counts = db.execute(select(
+        ServiceRequest.department, func.count(),
+        func.sum(case((ServiceRequest.priority == "high", 1), else_=0)),
+    ).where(ServiceRequest.resolved_at.is_(None)).group_by(ServiceRequest.department)).all()
 
     health = maintenance.health_board(db, today)
     gaps = workforce.staffing_gaps(db, today, days=2)
 
-    pending = db.scalars(
-        select(ActionCard).where(ActionCard.status == "pending")
-    ).all()
-    ranked = bus.rank(pending)
+    pending_count, critical_count, total_impact = db.execute(select(
+        func.count(), func.sum(case((ActionCard.urgency == "critical", 1), else_=0)),
+        func.sum(ActionCard.impact_inr),
+    ).where(ActionCard.status == "pending")).one()
+    ranked = db.scalars(select(ActionCard).where(ActionCard.status == "pending")
+                        .order_by(*bus.rank_order()).limit(5)).all()
 
     arrivals = db.scalar(
         select(func.count()).select_from(Booking).where(
@@ -120,12 +123,9 @@ def dashboard(db: Session = Depends(get_db)) -> dict[str, Any]:
         },
         "movements": {"arrivals": int(arrivals), "departures": int(departures)},
         "requests": {
-            "open": len(open_requests),
-            "high_priority": sum(1 for r in open_requests if r.priority == "high"),
-            "by_department": {
-                d: sum(1 for r in open_requests if r.department == d)
-                for d in sorted({r.department for r in open_requests})
-            },
+            "open": sum(n for _, n, _ in request_counts),
+            "high_priority": sum(high for _, _, high in request_counts),
+            "by_department": {dept: n for dept, n, _ in request_counts},
         },
         "asset_health": {
             "critical": sum(1 for a in health if a["status"] == "critical"),
@@ -140,9 +140,9 @@ def dashboard(db: Session = Depends(get_db)) -> dict[str, Any]:
         },
         "sentiment": {"overall": overall_sentiment, "by_department": sentiment},
         "actions": {
-            "pending": len(pending),
-            "critical": sum(1 for c in pending if c.urgency == "critical"),
-            "total_impact_inr": round(sum(c.impact_inr for c in pending), 2),
+            "pending": pending_count,
+            "critical": critical_count or 0,
+            "total_impact_inr": round(total_impact or 0, 2),
             "top": [card_json(c) for c in ranked[:5]],
         },
     }
@@ -155,7 +155,7 @@ def dashboard(db: Session = Depends(get_db)) -> dict[str, Any]:
 def list_actions(
     status: str = Query("pending"),
     engine: str | None = None,
-    limit: int = Query(50, le=200),
+    limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     stmt = select(ActionCard)
@@ -163,8 +163,8 @@ def list_actions(
         stmt = stmt.where(ActionCard.status == status)
     if engine:
         stmt = stmt.where(ActionCard.engine == engine)
-    cards = list(db.scalars(stmt.order_by(ActionCard.created_at.desc()).limit(limit)).all())
-    ordered = bus.rank(cards) if status == "pending" else cards
+    ordering = bus.rank_order() if status == "pending" else (ActionCard.created_at.desc(), ActionCard.id.desc())
+    ordered = list(db.scalars(stmt.order_by(*ordering).limit(limit)).all())
     return {
         "count": len(ordered),
         "total_impact_inr": round(sum(c.impact_inr for c in ordered), 2),
@@ -198,19 +198,23 @@ def decide(
         raise HTTPException(404, "action card not found")
     body = body or Decision()
 
-    if decision == "approve":
-        bus.approve(db, card, body.by)
-    elif decision == "snooze":
-        bus.snooze(db, card, body.snooze_hours, body.by)
-    else:
-        bus.dismiss(db, card, body.by)
+    try:
+        if decision == "approve":
+            bus.approve(db, card, body.by)
+        elif decision == "snooze":
+            bus.snooze(db, card, body.snooze_hours, body.by)
+        else:
+            bus.dismiss(db, card, body.by)
+    except bus.DecisionConflict as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
     db.commit()
     db.refresh(card)
     return card_json(card)
 
 
 @router.get("/actions-feed/history")
-def action_history(limit: int = Query(40, le=200), db: Session = Depends(get_db)) -> dict[str, Any]:
+def action_history(limit: int = Query(40, ge=1, le=200), db: Session = Depends(get_db)) -> dict[str, Any]:
     cards = db.scalars(
         select(ActionCard)
         .where(ActionCard.status.in_(("approved", "executed", "dismissed")))
@@ -231,23 +235,25 @@ def run_engines(engine: str | None = None, db: Session = Depends(get_db)) -> dic
         results = [orchestrator.run_engine(db, engine)]
     else:
         results = orchestrator.run_all(db)
-    orchestrator.apply_learning(db)
+    if any(result["ok"] for result in results):
+        orchestrator.apply_learning(db)
     return {"results": results}
 
 
 @router.get("/engines/status")
 def engine_status(db: Session = Depends(get_db)) -> dict[str, Any]:
     out = {}
+    pending_counts = dict(db.execute(select(ActionCard.engine, func.count())
+        .where(ActionCard.status == "pending").group_by(ActionCard.engine)).all())
+    latest = select(EngineRun.id, func.row_number().over(
+        partition_by=EngineRun.engine,
+        order_by=(EngineRun.started_at.desc(), EngineRun.id.desc()),
+    ).label("position")).subquery()
+    last_runs = {run.engine: run for run in db.scalars(select(EngineRun)
+        .join(latest, EngineRun.id == latest.c.id).where(latest.c.position == 1))}
     for name in orchestrator.ENGINES:
-        last = db.scalars(
-            select(EngineRun).where(EngineRun.engine == name)
-            .order_by(EngineRun.started_at.desc()).limit(1)
-        ).first()
-        pending = db.scalar(
-            select(func.count()).select_from(ActionCard).where(
-                ActionCard.engine == name, ActionCard.status == "pending"
-            )
-        ) or 0
+        last = last_runs.get(name)
+        pending = pending_counts.get(name, 0)
         out[name] = {
             "last_run": last.started_at.isoformat() if last else None,
             "ok": last.ok if last else None,
@@ -334,7 +340,7 @@ def assets(db: Session = Depends(get_db)) -> dict[str, Any]:
 
 
 @router.get("/assets/{asset_id}/telemetry")
-def telemetry(asset_id: str, points: int = Query(180, le=600), db: Session = Depends(get_db)) -> dict[str, Any]:
+def telemetry(asset_id: str, points: int = Query(180, ge=1, le=600), db: Session = Depends(get_db)) -> dict[str, Any]:
     asset = db.get(Asset, asset_id)
     if asset is None:
         raise HTTPException(404, "asset not found")
@@ -417,7 +423,7 @@ def inventory(db: Session = Depends(get_db)) -> dict[str, Any]:
 # Guest intelligence
 # --------------------------------------------------------------------------
 @router.get("/guests")
-def guests(limit: int = Query(20, le=100), db: Session = Depends(get_db)) -> dict[str, Any]:
+def guests(limit: int = Query(20, ge=1, le=100), db: Session = Depends(get_db)) -> dict[str, Any]:
     rows = db.scalars(
         select(Guest).order_by(Guest.lifetime_value.desc()).limit(limit)
     ).all()
@@ -461,8 +467,8 @@ def sentiment(db: Session = Depends(get_db)) -> dict[str, Any]:
 
 
 class ConciergeQuery(BaseModel):
-    question: str
-    guest_id: int | None = None
+    question: str = Field(min_length=1, max_length=4000)
+    guest_id: int | None = Field(None, ge=1)
 
 
 @router.post("/concierge")
@@ -500,9 +506,11 @@ def observe(db: Session = Depends(get_db)) -> dict[str, Any]:
 
 
 @router.get("/decisions")
-def decisions(limit: int = Query(50, le=200), db: Session = Depends(get_db)) -> dict[str, Any]:
+def decisions(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)) -> dict[str, Any]:
     logs = db.scalars(select(DecisionLog).order_by(DecisionLog.created_at.desc()).limit(limit)).all()
-    outcomes = {o.action_card_id: o for o in db.scalars(select(Outcome)).all()}
+    outcomes = {o.action_card_id: o for o in db.scalars(
+        select(Outcome).where(Outcome.action_card_id.in_([d.action_card_id for d in logs]))
+    ).all()}
     return {
         "decisions": [
             {

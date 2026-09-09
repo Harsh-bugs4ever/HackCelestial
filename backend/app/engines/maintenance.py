@@ -18,6 +18,7 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.cache import ModelCache
 from app.engines.bus import Driver, Proposal, executor
 from app.models import ActionCard, Asset, SensorReading, ServiceRecord, WorkOrder, utcnow
 
@@ -274,12 +275,13 @@ def best_service_window(db: Session, within_days: int, today: dt.date) -> tuple[
 # Assessing one asset fits an IsolationForest over its telemetry, which costs
 # well over a second. The dashboard, the asset detail route and the engine run
 # all assess the same assets for the same day, so memoise the computed part per
-# (asset, day) - mirroring _FORECAST_CACHE in demand.py.
+# (database, asset, day), for at most five minutes. Concurrent callers share
+# one fit, mirroring the forecast cache in demand.py.
 #
 # The Asset row is deliberately NOT cached: it belongs to the caller's session
 # and would raise DetachedInstanceError once that session closes. It is stripped
 # on the way in and re-attached from the caller's own object on the way out.
-_ASSESS_CACHE: dict[tuple[str, dt.date], dict | None] = {}
+_ASSESS_CACHE = ModelCache[dict | None](maxsize=256, ttl=300)
 
 
 def clear_assess_cache() -> None:
@@ -287,16 +289,13 @@ def clear_assess_cache() -> None:
 
 
 def assess(db: Session, asset: Asset, today: dt.date) -> dict | None:
-    key = (asset.id, today)
-    if key in _ASSESS_CACHE:
-        cached = _ASSESS_CACHE[key]
-        return None if cached is None else {**cached, "asset": asset}
+    key = (db.get_bind(), asset.id, today)
+    def compute():
+        result = _assess_uncached(db, asset, today)
+        return None if result is None else {k: v for k, v in result.items() if k != "asset"}
+    cached = _ASSESS_CACHE.get(key, compute)
+    return None if cached is None else {**cached, "asset": asset}
 
-    result = _assess_uncached(db, asset, today)
-    _ASSESS_CACHE[key] = (
-        None if result is None else {k: v for k, v in result.items() if k != "asset"}
-    )
-    return result
 
 
 def _assess_uncached(db: Session, asset: Asset, today: dt.date) -> dict | None:
