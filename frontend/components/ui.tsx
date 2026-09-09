@@ -23,7 +23,7 @@ export function StatTile({
 }) {
   return (
     <motion.div
-      className="card p-4 flex flex-col gap-1"
+      className="card stat-tile flex flex-col gap-2"
       style={accent ? { borderTop: `2px solid ${accent}` } : undefined}
       whileHover={{ y: -2 }}
       transition={{ duration: 0.25, ease: EASE_OUT }}
@@ -31,7 +31,7 @@ export function StatTile({
       <div className="text-[12px] uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>
         {label}
       </div>
-      <div className="text-2xl font-semibold leading-tight tabular">{value}</div>
+      <div className="text-[28px] font-semibold leading-tight tabular">{value}</div>
       <div className="flex items-center gap-2 text-[12px]" style={{ color: "var(--text-secondary)" }}>
         {delta && (
           <span
@@ -96,7 +96,7 @@ export function StatusPill({ status }: { status: "critical" | "watch" | "healthy
 
 export function Spinner({ label = "Loading" }: { label?: string }) {
   return (
-    <div className="flex items-center gap-2 text-[13px] py-8" style={{ color: "var(--text-muted)" }}>
+    <div role="status" className="flex items-center gap-2 text-[13px] py-8" style={{ color: "var(--text-muted)" }}>
       <span
         aria-hidden
         className="inline-block h-3.5 w-3.5 rounded-full border-2 animate-spin"
@@ -148,10 +148,11 @@ export function ErrorNote({ error, hint }: { error: string; hint?: string }) {
       style={{ borderLeft: "3px solid var(--status-critical)" }}
       role="alert"
     >
+      <button className="btn-ghost float-right px-3 py-2" onClick={() => window.location.reload()}>Try again</button>
       <div className="font-semibold mb-1">Could not reach the engine service</div>
       <div style={{ color: "var(--text-secondary)" }}>{error}</div>
       <div className="mt-2" style={{ color: "var(--text-muted)" }}>
-        {hint ?? "Start the backend with: uvicorn app.main:app --reload --port 8000 (from backend/)"}
+        {hint ?? "The service is temporarily unavailable. Please try again in a moment."}
       </div>
     </div>
   );

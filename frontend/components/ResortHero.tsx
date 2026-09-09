@@ -68,7 +68,7 @@ export function ResortHero({
           <div className="flex flex-col gap-3">
             <div className="flex items-center gap-2">
               <span className="eyebrow" style={{ color: "rgba(190, 205, 225, 0.72)" }}>
-                Live property model
+                PROPERTY OVERVIEW
               </span>
               <span className="flex items-center gap-1.5 text-[11px]" style={{ color: "#9fb2c8" }}>
                 {live ? <span className="live-dot" /> : <span>○</span>}
@@ -76,17 +76,16 @@ export function ResortHero({
               </span>
             </div>
 
-            <h1
+            <h2
               className="text-[30px] font-semibold leading-[1.1] tracking-tight lg:text-[36px]"
               style={{ color: "#f7fafd" }}
             >
               {data.resort}
-            </h1>
+            </h2>
 
             <p className="max-w-[46ch] text-[13.5px] leading-relaxed" style={{ color: "#9fb2c8" }}>
-              Every lit window is a room sold tonight. Every floating marker is a real
-              asset, held at the height of its failure risk. Four engines read this same
-              spine and file recommendations you can approve.
+              Your property at a glance. Track today's performance, spot what needs
+              attention, and turn recommendations into better guest experiences.
             </p>
           </div>
 
@@ -117,7 +116,7 @@ export function ResortHero({
               disabled={running}
               className="btn-primary px-4 py-2.5 text-[13px] disabled:opacity-55"
             >
-              {running ? "Running engines…" : "Run all engines now"}
+              {running ? "Running engines…" : "Refresh insights"}
             </button>
             <Link
               href="/actions"
@@ -127,7 +126,7 @@ export function ResortHero({
                 border: "1px solid rgba(160, 185, 215, 0.24)",
               }}
             >
-              Open action bus →
+              Review actions →
             </Link>
 
             <span className="ml-1 text-[12px]" style={{ color: "#7f93ab" }}>
@@ -137,7 +136,7 @@ export function ResortHero({
         </div>
 
         {/* Right: the model itself */}
-        <div className="relative h-[300px] lg:h-[400px]">
+        <div className="relative h-[240px] lg:h-[280px]">
           <ResortScene
             roomsSold={occ.rooms_sold}
             roomsAvailable={occ.rooms_available}

@@ -26,11 +26,12 @@ type Props = {
  * figure, the drivers behind it, and three buttons. Never a chart alone.
  */
 export function ActionCardView({ card, onDecide, compact = false }: Props) {
+  const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [showWhy, setShowWhy] = useState(!compact);
   const decided = card.status !== "pending";
 
-  const impactPositive = card.impact_kind !== "cost";
+  const impactPositive = card.impact_kind !== "cost" && card.impact_inr > 0;
   const impactLabel =
     card.impact_kind === "cost_avoided"
       ? "cost avoided"
@@ -40,8 +41,11 @@ export function ActionCardView({ card, onDecide, compact = false }: Props) {
 
   async function act(decision: "approve" | "snooze" | "dismiss") {
     setBusy(decision);
+    setError(null);
     try {
       await onDecide(card.id, decision);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not save your decision. Please try again.");
     } finally {
       setBusy(null);
     }
@@ -61,6 +65,7 @@ export function ActionCardView({ card, onDecide, compact = false }: Props) {
       exit={{ opacity: 0, x: 28, scale: 0.97, transition: { duration: 0.24, ease: EASE_OUT } }}
       transition={{ duration: 0.42, ease: EASE_OUT }}
     >
+      {error && <p role="alert" className="text-[13px]" style={{ color: "var(--status-critical)" }}>{error}</p>}
       <header className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2 flex-wrap">

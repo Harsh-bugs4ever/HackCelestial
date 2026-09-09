@@ -18,6 +18,7 @@ export default function DashboardPage() {
   const { data, error, loading, stale, reload } = useLiveData(api.dashboard, {
     intervalMs: 20000,
   });
+  const [runError, setRunError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [live, setLive] = useState(false);
 
@@ -29,8 +30,10 @@ export default function DashboardPage() {
       ws.onopen = () => setLive(true);
       ws.onclose = () => setLive(false);
       ws.onmessage = (ev) => {
-        const msg = JSON.parse(ev.data as string) as { type?: string };
-        if (msg.type === "actions.new") void reload();
+        try {
+          const msg = JSON.parse(ev.data as string) as { type?: string };
+          if (msg.type === "actions.new") void reload();
+        } catch { /* Ignore malformed events. */ }
       };
     } catch {
       setLive(false);
@@ -45,9 +48,12 @@ export default function DashboardPage() {
 
   async function runEngines() {
     setRunning(true);
+    setRunError(null);
     try {
       await api.runEngines();
       await reload();
+    } catch (e) {
+      setRunError(e instanceof Error ? e.message : "Could not refresh insights. Please try again.");
     } finally {
       setRunning(false);
     }
@@ -62,6 +68,8 @@ export default function DashboardPage() {
         {stale && <StaleBanner key="stale" error={error!} onRetry={() => void reload()} />}
       </AnimatePresence>
 
+      {runError && <p role="alert" className="card p-4 text-sm" style={{ color: "var(--status-critical)" }}>{runError}</p>}
+      <div><div className="eyebrow mb-2">YOUR PROPERTY, CONNECTED</div><h1 className="text-[28px] font-semibold tracking-tight">Operations overview</h1><p className="text-[13px] mt-2" style={{ color: "var(--text-secondary)" }}>A clear view of today. A confident plan for what comes next.</p></div>
       <ResortHero data={data} live={live} running={running} onRun={runEngines} />
 
       {/* Live status - occupancy, staffing gaps, open requests, equipment health */}
@@ -140,7 +148,7 @@ export default function DashboardPage() {
             </Link>
           }
         >
-          <div className="card overflow-hidden">
+          <div className="card overflow-x-auto">
             <table className="w-full text-[13px]">
               <thead>
                 <tr style={{ color: "var(--text-muted)" }}>

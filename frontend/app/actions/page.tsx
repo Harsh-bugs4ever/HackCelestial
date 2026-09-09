@@ -15,11 +15,13 @@ const FILTERS = [
 ] as const;
 
 export default function ActionsPage() {
+  const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState<ActionCard[]>([]);
   const [history, setHistory] = useState<ActionCard[]>([]);
   const [engine, setEngine] = useState<string>("all");
   const [tab, setTab] = useState<"queue" | "history">("queue");
   const [error, setError] = useState<string | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -30,7 +32,7 @@ export default function ActionsPage() {
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-    }
+    } finally { setLoading(false); }
   }, []);
 
   useEffect(() => {
@@ -49,20 +51,25 @@ export default function ActionsPage() {
 
   async function runAll() {
     setBusy(true);
+    setRunError(null);
     try {
       await api.runEngines();
       await load();
+    } catch (e) {
+      setRunError(e instanceof Error ? e.message : "Could not refresh insights. Please try again.");
     } finally {
       setBusy(false);
     }
   }
 
+  if (loading) return <Spinner label="Loading action queue" />;
   if (error) return <ErrorNote error={error} />;
 
   const totalImpact = shown.reduce((a, c) => a + c.impact_inr, 0);
 
   return (
     <div className="flex flex-col gap-6">
+      {runError && <p role="alert" className="card p-4 text-sm" style={{ color: "var(--status-critical)" }}>{runError}</p>}
       <Section
         title="Action bus"
         description="Every engine output arrives here as an approvable card — a recommendation, its confidence, its rupee impact, and the drivers behind it. Nothing executes without approval."
@@ -82,6 +89,7 @@ export default function ActionsPage() {
             {(["queue", "history"] as const).map((t) => (
               <button
                 key={t}
+                aria-pressed={tab === t}
                 onClick={() => setTab(t)}
                 className="px-3 py-1.5 rounded-md text-[13px] font-medium"
                 style={
@@ -100,6 +108,7 @@ export default function ActionsPage() {
               {FILTERS.map((f) => (
                 <button
                   key={f.key}
+                  aria-pressed={engine === f.key}
                   onClick={() => setEngine(f.key)}
                   className="px-2.5 py-1.5 rounded-md text-[13px]"
                   style={
