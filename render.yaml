@@ -6,10 +6,13 @@ services:
     region: singapore
     rootDir: backend
     healthCheckPath: /health
-    # Seeding at build time bakes the SQLite demo dataset into the instance image.
-    buildCommand: pip install -r requirements.txt && python -m app.seed.generate
+    # Seeding at build time bakes the SQLite demo dataset into the instance
+    # image. --reset forces a rebuild so every deploy starts from fresh data.
+    buildCommand: pip install -r requirements.txt && python -m app.seed.generate --reset
     # One worker: the free instance has 512MB and the WebSocket hub is in-process,
     # so a second worker would fan out to only half the connected dashboards.
+    # Nothing slow belongs here - the host scans for an open port and gives up
+    # if the server has not bound one, so seeding must stay in the build step.
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
     envVars:
       - key: PYTHON_VERSION

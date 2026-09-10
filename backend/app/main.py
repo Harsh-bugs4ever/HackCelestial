@@ -87,7 +87,17 @@ async def _warm_caches() -> None:
     fit; cold, both can take several seconds. Both engines cache results for
     five minutes and share in-flight computations with arriving requests.
     Runs in a worker thread so it never blocks the event loop or startup.
+
+    The wait ahead of it matters on a free instance: uvicorn opens the socket
+    only once startup returns, and the host then scans for that port and calls
+    /health. Model fitting on a fraction of a CPU delays both, so the warm-up
+    yields until the instance has been declared live.
     """
+    if not settings.warm_caches_on_boot:
+        log.info("cache warm-up disabled - first request pays the cold model cost")
+        return
+    await asyncio.sleep(settings.warm_caches_delay_seconds)
+
     def work() -> None:
         db = SessionLocal()
         try:

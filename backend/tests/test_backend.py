@@ -334,5 +334,54 @@ class KeepAlivePingTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(len(calls), 2)
 
 
+class SeedEntrypointTests(unittest.TestCase):
+    """Re-seeding at start time is what starves the platform's port scan."""
+
+    def test_populated_database_skips_the_rebuild(self):
+        from app.seed import generate
+        with patch.object(generate, 'is_seeded', return_value=True), \
+                patch.object(generate, 'run') as run:
+            generate.main([])
+        run.assert_not_called()
+
+    def test_empty_database_seeds(self):
+        from app.seed import generate
+        with patch.object(generate, 'is_seeded', return_value=False), \
+                patch.object(generate, 'run') as run:
+            generate.main([])
+        run.assert_called_once_with(reset=True)
+
+    def test_reset_flag_rebuilds_regardless(self):
+        from app.seed import generate
+        with patch.object(generate, 'is_seeded', return_value=True), \
+                patch.object(generate, 'run') as run:
+            generate.main(['--reset'])
+        run.assert_called_once_with(reset=True)
+
+
+class WarmUpTests(unittest.IsolatedAsyncioTestCase):
+    async def test_warm_up_can_be_switched_off(self):
+        from app import main as app_main
+        with patch.object(app_main.settings, 'warm_caches_on_boot', False), \
+                patch.object(app_main.maintenance, 'health_board') as board:
+            await app_main._warm_caches()
+        board.assert_not_called()
+
+    async def test_warm_up_waits_before_fitting_models(self):
+        """The socket must be open and health-checked before the CPU goes."""
+        from app import main as app_main
+        order = []
+        async def sleep(seconds):
+            order.append(f'slept {seconds}')
+        async def to_thread(fn, *args, **kwargs):
+            order.append('fitted')
+        with patch.object(app_main.settings, 'warm_caches_on_boot', True), \
+                patch.object(app_main.settings, 'warm_caches_delay_seconds', 15), \
+                patch.object(app_main.asyncio, 'sleep', sleep), \
+                patch.object(app_main.asyncio, 'to_thread', to_thread):
+            await app_main._warm_caches()
+        self.assertEqual(order, ['slept 15', 'fitted'])
+
+
 if __name__ == '__main__':
     unittest.main()

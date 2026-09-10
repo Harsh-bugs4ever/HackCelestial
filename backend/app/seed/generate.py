@@ -8,10 +8,12 @@ engine to catch.
 """
 from __future__ import annotations
 
+import argparse
 import datetime as dt
 import math
 import random
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -731,5 +733,32 @@ def run(reset: bool = True) -> None:
         db.close()
 
 
+def is_seeded() -> bool:
+    """True when a previous run already populated the spine."""
+    init_db()  # CREATE TABLE IF NOT EXISTS - cheap, and safe on a fresh volume
+    with SessionLocal() as db:
+        return bool(db.scalar(select(func.count()).select_from(RoomCategory)))
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Seed only when there is nothing there.
+
+    Render's free tier bakes the dataset in at build time, but a start command
+    that also seeds is a common setup - and re-running the full generator costs
+    over two minutes on a free instance's shared CPU, which is long enough for
+    the platform's port scan to give up before the server ever binds. Skipping
+    an already-seeded database keeps that boot path down to milliseconds.
+    """
+    parser = argparse.ArgumentParser(description="Seed the demo dataset.")
+    parser.add_argument("--reset", action="store_true",
+                        help="drop and rebuild even when data is already present")
+    args = parser.parse_args(argv)
+
+    if not args.reset and is_seeded():
+        print("Seed skipped - the spine already holds data (use --reset to rebuild).")
+        return
+    run(reset=True)
+
+
 if __name__ == "__main__":
-    run()
+    main()

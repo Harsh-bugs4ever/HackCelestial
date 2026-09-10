@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     render_external_url: str = ""
     keepalive_interval_seconds: int = 600
 
+    # Boot behaviour. A free instance shares a fraction of a CPU, so fitting
+    # models the moment the socket opens competes with the platform's port
+    # scan and first health check. The delay lets those land first.
+    warm_caches_on_boot: bool = True
+    warm_caches_delay_seconds: int = 15
+
     # Engine tuning
     forecast_horizon_days: int = 30
     total_rooms: int = 120

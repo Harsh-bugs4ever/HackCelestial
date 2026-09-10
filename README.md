@@ -107,7 +107,7 @@ python -m venv venv
 source venv/bin/activate            # Windows: .\venv\Scripts\activate
 
 pip install -r requirements-ml.txt  # or requirements.txt for the light set
-python -m app.seed.generate         # seeds two years of resort data
+python -m app.seed.generate         # seeds two years of resort data (--reset to rebuild)
 uvicorn app.main:app --reload --port 8000
 ```
 
@@ -145,7 +145,16 @@ python -m scripts.smoke
 
 The repo ships `render.yaml`, so a Blueprint deploy needs no manual configuration: connect the repo on Render, set `ANTHROPIC_API_KEY` if the LLM concierge is wanted, and deploy.
 
-To configure by hand, create a Python web service with root directory `backend`, build command `pip install -r requirements.txt && python -m app.seed.generate`, start command `uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1`, and health check path `/health`.
+To configure by hand, create a Python web service with root directory `backend`, health check path `/health`, and:
+
+| Setting | Value |
+|---|---|
+| Build command | `pip install -r requirements.txt && python -m app.seed.generate --reset` |
+| Start command | `uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1` |
+
+**Keep seeding out of the start command.** Render scans for an open port and fails the deploy — `Port scan timeout reached, no open ports detected` — if the server has not bound one. A full rebuild of the dataset takes over two minutes on a free instance's shared CPU, all of it before uvicorn starts. Seeding belongs in the build, where it is baked into the instance image.
+
+`python -m app.seed.generate` is safe either way: it exits in milliseconds when the spine already holds data, and only `--reset` forces a rebuild. A start command that seeds therefore costs a fraction of a second rather than blowing the port scan.
 
 **Light vs. full dependency set.** `requirements.txt` contains only what the API needs to boot (FastAPI, SQLAlchemy, pandas, numpy, scikit-learn) and installs from wheels in about two minutes. The heavy stack lives in `requirements-ml.txt`; `sentence-transformers` alone pulls PyTorch (~2.5 GB), which will not fit the free tier's 512 MB. Every heavy import is lazy and guarded, so the API stays fully functional without them — the affected engines log a warning and degrade:
 
@@ -185,6 +194,8 @@ Staying awake around the clock spends roughly 730 of the 750 free instance hours
 | `ANTHROPIC_API_KEY` | No | unset | Claude-powered concierge and review summarisation; unset means extractive fallback |
 | `LLM_MODEL` | No | `claude-opus-5` | Claude model identifier |
 | `FORECAST_HORIZON_DAYS` | No | `30` | Demand forecast horizon in days |
+| `WARM_CACHES_ON_BOOT` | No | `true` | Fit the models at boot rather than on the first request |
+| `WARM_CACHES_DELAY_SECONDS` | No | `15` | Grace period before warm-up, so the port scan and health check land first |
 | `KEEPALIVE_ENABLED` | No | `true` | Self-ping loop; needs a URL below to do anything |
 | `KEEPALIVE_URL` | No | unset | Ping target; falls back to `RENDER_EXTERNAL_URL`, which Render injects |
 | `KEEPALIVE_INTERVAL_SECONDS` | No | `600` | Seconds between self-pings; stay under Render's ~15 min idle timeout |
