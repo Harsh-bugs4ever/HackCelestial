@@ -6,6 +6,7 @@ Celery eager mode. The architecture is unchanged either way.
 """
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -38,6 +39,14 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     llm_model: str = "claude-opus-5"
 
+    # Keep-alive. A free Render instance sleeps after ~15 min idle and takes
+    # ~50s to wake; a self-ping on a shorter interval keeps it warm. Render
+    # injects RENDER_EXTERNAL_URL, so deployments need no configuration.
+    keepalive_enabled: bool = True
+    keepalive_url: str = ""
+    render_external_url: str = ""
+    keepalive_interval_seconds: int = 600
+
     # Engine tuning
     forecast_horizon_days: int = 30
     total_rooms: int = 120
@@ -47,6 +56,17 @@ class Settings(BaseSettings):
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")
+
+    @property
+    def keepalive_target(self) -> str:
+        """The URL to self-ping, or "" when the loop should stay dormant."""
+        if not self.keepalive_enabled:
+            return ""
+        base = (self.keepalive_url or self.render_external_url).strip().rstrip("/")
+        if not base:
+            return ""
+        # A bare origin gets the health endpoint; an explicit path is honoured.
+        return base if urlsplit(base).path else f"{base}/health"
 
 
 @lru_cache
