@@ -158,7 +158,16 @@ To configure by hand, create a Python web service with root directory `backend`,
 | `faiss-cpu` | Guest | NumPy cosine search |
 | `sentence-transformers` | Guest | Hashed bag-of-words |
 
-Render's free tier uses ephemeral disk: the build seeds SQLite into the instance image, so demo data is present on boot and resets on each deploy. Free instances also sleep after roughly 15 minutes idle and take about 50 seconds to wake. For persistent data, attach managed PostgreSQL and set `DATABASE_URL`.
+Render's free tier uses ephemeral disk: the build seeds SQLite into the instance image, so demo data is present on boot and resets on each deploy. For persistent data, attach managed PostgreSQL and set `DATABASE_URL`.
+
+#### Keeping the instance awake
+
+A free Render instance sleeps after roughly 15 minutes without an inbound request and takes about 50 seconds to wake, so the first visitor after a quiet spell watches a cold boot instead of the dashboard. Two independent pingers cover that, because each fails in a way the other survives:
+
+1. **In-process self-ping** — `backend/app/core/keepalive.py` requests `/health` every 10 minutes. A request the instance sends to its own public URL comes back through Render's router, which the idle timer counts as traffic. The target is `KEEPALIVE_URL`, or `RENDER_EXTERNAL_URL` if that is unset, which Render injects into every service — so a Blueprint deploy needs no configuration. Neither is set locally, so the loop stays dormant in development, and `/health` reports `"keepalive": "on"` wherever it is running. It cannot help once the instance is *already* asleep.
+2. **GitHub Actions cron** — `.github/workflows/keep-alive.yml` pings from outside every 10 minutes, which is what wakes the service after a sleep, a crash, or a missed self-ping. It needs the service URL in a repository variable named `BACKEND_URL` (*Settings → Secrets and variables → Actions → Variables*), for example `https://smart-resort-360-api.onrender.com`; without it the job logs a warning and passes. GitHub disables scheduled workflows in repositories left untouched for 60 days, and can delay a cron under load — hence the self-ping alongside it.
+
+Staying awake around the clock spends roughly 730 of the 750 free instance hours a month, so keep it to one free service, or set `KEEPALIVE_ENABLED=false` and drop the workflow's schedule when the budget matters more than the cold start.
 
 ### Frontend — Netlify
 
@@ -176,6 +185,9 @@ Render's free tier uses ephemeral disk: the build seeds SQLite into the instance
 | `ANTHROPIC_API_KEY` | No | unset | Claude-powered concierge and review summarisation; unset means extractive fallback |
 | `LLM_MODEL` | No | `claude-opus-5` | Claude model identifier |
 | `FORECAST_HORIZON_DAYS` | No | `30` | Demand forecast horizon in days |
+| `KEEPALIVE_ENABLED` | No | `true` | Self-ping loop; needs a URL below to do anything |
+| `KEEPALIVE_URL` | No | unset | Ping target; falls back to `RENDER_EXTERNAL_URL`, which Render injects |
+| `KEEPALIVE_INTERVAL_SECONDS` | No | `600` | Seconds between self-pings; stay under Render's ~15 min idle timeout |
 | `NEXT_PUBLIC_API_BASE` | Frontend | `http://127.0.0.1:8000` | Backend API URL; set on Netlify |
 
 ---

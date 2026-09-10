@@ -282,5 +282,57 @@ class HubTests(unittest.IsolatedAsyncioTestCase):
         await task
 
 
+class KeepAliveTests(unittest.TestCase):
+    """The self-ping must be dormant locally and self-configuring on Render."""
+
+    def settings(self, **kwargs):
+        from app.core.config import Settings
+        # env_file=None keeps a developer's local .env out of the assertions.
+        return Settings(_env_file=None, **kwargs)
+
+    def test_dormant_without_a_public_url(self):
+        self.assertEqual(self.settings().keepalive_target, '')
+
+    def test_render_injected_url_gets_the_health_path(self):
+        target = self.settings(render_external_url='https://api.onrender.com/').keepalive_target
+        self.assertEqual(target, 'https://api.onrender.com/health')
+
+    def test_explicit_url_wins_and_keeps_its_path(self):
+        target = self.settings(keepalive_url='https://a.example/ping',
+                               render_external_url='https://b.example').keepalive_target
+        self.assertEqual(target, 'https://a.example/ping')
+
+    def test_disabled_flag_silences_a_configured_url(self):
+        target = self.settings(render_external_url='https://api.onrender.com',
+                               keepalive_enabled=False).keepalive_target
+        self.assertEqual(target, '')
+
+
+class KeepAlivePingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_ping_does_not_kill_the_loop(self):
+        from app.core import keepalive
+        calls = []
+        class Client:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *exc): return False
+            async def get(self, url, headers=None):
+                calls.append(url)
+                if len(calls) == 1:
+                    raise RuntimeError('connection reset')
+                return SimpleNamespace(status_code=200)
+        with patch('httpx.AsyncClient', lambda **kw: Client()), \
+                patch.object(keepalive.random, 'uniform', lambda *a: 0):
+            task = asyncio.create_task(keepalive.ping_forever('https://x.example/health', 0))
+            for _ in range(200):
+                await asyncio.sleep(0)
+                if len(calls) >= 2:
+                    break
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        # The second ping only happens if the first exception was swallowed.
+        self.assertGreaterEqual(len(calls), 2)
+
+
 if __name__ == '__main__':
     unittest.main()

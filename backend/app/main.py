@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 from app.api.routes import card_json, router
 from app.core.config import settings
 from app.core.db import SessionLocal, init_db
+from app.core.keepalive import ping_forever
 from app.engines import bus, maintenance, workforce
 from app.models import ActionCard
 
@@ -112,14 +113,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.info("%s ready - %d action cards in the bus", settings.app_name, count)
     finally:
         db.close()
-    task = asyncio.create_task(_watch_actions())
-    warm = asyncio.create_task(_warm_caches())
+    tasks = [asyncio.create_task(_watch_actions()), asyncio.create_task(_warm_caches())]
+    # Only runs where a public URL is configured - see app/core/keepalive.py.
+    if target := settings.keepalive_target:
+        tasks.append(asyncio.create_task(
+            ping_forever(target, settings.keepalive_interval_seconds)))
     try:
         yield
     finally:
-        for t in (task, warm):
+        for t in tasks:
             t.cancel()
-        for t in (task, warm):
+        for t in tasks:
             with contextlib.suppress(asyncio.CancelledError):
                 await t
 
@@ -147,6 +151,7 @@ def health() -> dict:
         "database": "sqlite" if settings.is_sqlite else "postgres",
         "timescale": settings.timescale_enabled,
         "llm": "configured" if settings.anthropic_api_key else "offline_fallback",
+        "keepalive": "on" if settings.keepalive_target else "off",
     }
 
 

@@ -24,3 +24,10 @@ services:
       # Set in the Render dashboard. Unset -> grounded extractive fallback.
       - key: ANTHROPIC_API_KEY
         sync: false
+      # Self-ping every 10 min so the free instance never hits the ~15 min idle
+      # timeout and its ~50s cold start. The target comes from
+      # RENDER_EXTERNAL_URL, which Render injects. "false" lets it sleep.
+      - key: KEEPALIVE_ENABLED
+        value: "true"
+      - key: KEEPALIVE_INTERVAL_SECONDS
+        value: "600"
