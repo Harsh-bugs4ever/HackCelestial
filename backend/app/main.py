@@ -12,6 +12,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select
 
 from app.api.routes import card_json, router
+from app.core import events, notify
+from app.core.auth import auth_enabled
+from app.core.clock import business_today
 from app.core.config import settings
 from app.core.db import SessionLocal, init_db
 from app.core.keepalive import ping_forever
@@ -64,20 +67,56 @@ def _pending_snapshot(seen: set[int]) -> tuple[set[int], list[dict]]:
         return current, fresh
 
 
+# Safety-net interval. Writers nudge the watcher the moment they commit, so
+# this only has to catch changes made by another process (a Celery worker, a
+# second API instance) or a nudge lost to a shutdown race.
+IDLE_POLL_SECONDS = 20
+
+
 async def _watch_actions() -> None:
     """Publish additions and removals without blocking HTTP or socket heartbeats."""
+    wake = asyncio.Event()
+    events.bind(asyncio.get_running_loop(), wake)
     seen: set[int] = set()
     first_pass = True
+    try:
+        while True:
+            try:
+                current, fresh = await asyncio.to_thread(_pending_snapshot, seen)
+                if current != seen and not first_pass:
+                    await hub.broadcast({"type": "actions.new", "cards": fresh,
+                                         "pending_total": len(current)})
+                seen, first_pass = current, False
+            except Exception as exc:
+                log.warning("action watcher: %s", exc)
+            # Return immediately when a writer signals, otherwise doze.
+            wake.clear()
+            with contextlib.suppress(TimeoutError, asyncio.TimeoutError):
+                await asyncio.wait_for(wake.wait(), timeout=IDLE_POLL_SECONDS)
+    finally:
+        events.unbind()
+
+
+async def _drain_outbox() -> None:
+    """Deliver queued notifications.
+
+    Kept out of the request path deliberately: an SMTP timeout must not roll
+    back a roster change that has already been written, and a message must
+    survive a restart between the decision and the send.
+    """
     while True:
         try:
-            current, fresh = await asyncio.to_thread(_pending_snapshot, seen)
-            if current != seen and not first_pass:
-                await hub.broadcast({"type": "actions.new", "cards": fresh,
-                                     "pending_total": len(current)})
-            seen, first_pass = current, False
+            result = await asyncio.to_thread(_flush_once)
+            if result.get("sent") or result.get("failed"):
+                log.info("outbox: %s", result)
         except Exception as exc:
-            log.warning("action watcher: %s", exc)
-        await asyncio.sleep(4)
+            log.warning("outbox drain: %s", exc)
+        await asyncio.sleep(10)
+
+
+def _flush_once() -> dict:
+    with SessionLocal() as db:
+        return notify.flush_outbox(db)
 
 
 async def _warm_caches() -> None:
@@ -110,10 +149,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     db = SessionLocal()
     try:
         count = db.scalar(select(func.count()).select_from(ActionCard)) or 0
-        log.info("%s ready - %d action cards in the bus", settings.app_name, count)
+        log.info(
+            "%s ready - %d action cards in the bus, operating day %s (%s)",
+            settings.app_name, count, business_today(), settings.resort_timezone,
+        )
+        if settings.shadow_mode:
+            log.warning(
+                "SHADOW MODE: approvals will be recorded and previewed but will "
+                "not write artifacts."
+            )
     finally:
         db.close()
-    tasks = [asyncio.create_task(_watch_actions()), asyncio.create_task(_warm_caches())]
+    tasks = [
+        asyncio.create_task(_watch_actions()),
+        asyncio.create_task(_warm_caches()),
+        asyncio.create_task(_drain_outbox()),
+    ]
     # Only runs where a public URL is configured - see app/core/keepalive.py.
     if target := settings.keepalive_target:
         tasks.append(asyncio.create_task(
@@ -152,6 +203,11 @@ def health() -> dict:
         "timescale": settings.timescale_enabled,
         "llm": "configured" if settings.anthropic_api_key else "offline_fallback",
         "keepalive": "on" if settings.keepalive_target else "off",
+        "auth": "enabled" if auth_enabled() else "DISABLED",
+        "shadow_mode": settings.shadow_mode,
+        "timezone": settings.resort_timezone,
+        "operating_day": business_today().isoformat(),
+        "notify_channels": settings.notify_channel_list,
     }
 
 

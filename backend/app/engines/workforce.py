@@ -18,7 +18,7 @@ import math
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.engines.bus import Driver, Proposal, executor
+from app.engines.bus import Driver, Proposal, executor, reverser
 from app.models import (
     ActionCard,
     InventoryItem,
@@ -436,17 +436,18 @@ def _inventory_proposals(db: Session, today: dt.date, ctx: dict) -> list[Proposa
 
 @executor("roster_change")
 def execute_roster_change(db: Session, card: ActionCard) -> dict:
-    day = dt.date.fromisoformat(card.payload["date"])
-    role = card.payload["role"]
+    payload = card.effective_payload
+    day = dt.date.fromisoformat(payload["date"])
+    role = payload["role"]
     created = 0
-    for a in card.payload.get("assignments", []):
+    for a in payload.get("assignments", []):
         db.add(ShiftAssignment(
             date=day, slot=a["slot"], role=role, staff_id=a["staff_id"],
             planned=True, action_card_id=card.id,
         ))
         created += 1
     # if the solver could not name people, still record the open requirement
-    for _ in range(max(0, card.payload["short_by"] - created)):
+    for _ in range(max(0, int(payload["short_by"]) - created)):
         db.add(ShiftAssignment(
             date=day, slot="morning", role=role, staff_id=None,
             planned=True, action_card_id=card.id,
@@ -457,10 +458,10 @@ def execute_roster_change(db: Session, card: ActionCard) -> dict:
         "artifact": "roster_change",
         "date": day.isoformat(),
         "role": role,
-        "shifts_added": card.payload["short_by"],
-        "named_staff": [a["staff_name"] for a in card.payload.get("assignments", [])],
+        "shifts_added": int(payload["short_by"]),
+        "named_staff": [a["staff_name"] for a in payload.get("assignments", [])],
         "message": (
-            f"{card.payload['short_by']} {role.replace('_', ' ')} shifts added to the "
+            f"{int(payload['short_by'])} {role.replace('_', ' ')} shifts added to the "
             f"{day:%d %b} roster."
         ),
     }
@@ -468,14 +469,15 @@ def execute_roster_change(db: Session, card: ActionCard) -> dict:
 
 @executor("purchase_order")
 def execute_purchase_order(db: Session, card: ActionCard) -> dict:
-    item = db.get(InventoryItem, card.payload["item_id"])
+    payload = card.effective_payload
+    item = db.get(InventoryItem, payload["item_id"])
     if item is None:
-        raise ValueError(f"unknown item {card.payload['item_id']}")
+        raise ValueError(f"unknown item {payload['item_id']}")
     po = PurchaseOrder(
         item_id=item.id,
-        quantity=float(card.payload["quantity"]),
-        total_cost=float(card.payload["total_cost"]),
-        needed_by=dt.date.fromisoformat(card.payload["needed_by"]),
+        quantity=float(payload["quantity"]),
+        total_cost=float(payload["total_cost"]),
+        needed_by=dt.date.fromisoformat(payload["needed_by"]),
         status="raised",
         action_card_id=card.id,
     )
@@ -494,3 +496,38 @@ def execute_purchase_order(db: Session, card: ActionCard) -> dict:
         ),
         "raised_at": utcnow().isoformat(),
     }
+
+
+@reverser("roster_change")
+def revert_roster_change(db: Session, card: ActionCard) -> dict:
+    """Drop the shifts this card created.
+
+    Staff were told about these shifts when the card executed; the bus queues a
+    retraction so the undo reaches the same people the instruction did.
+    """
+    rows = db.scalars(
+        select(ShiftAssignment).where(ShiftAssignment.action_card_id == card.id)
+    ).all()
+    for row in rows:
+        db.delete(row)
+    db.flush()
+    return {"ok": True, "shifts_removed": len(rows),
+            "message": f"{len(rows)} planned shift(s) withdrawn."}
+
+
+@reverser("purchase_order")
+def revert_purchase_order(db: Session, card: ActionCard) -> dict:
+    """Cancel the PO and undo the assumed goods-in."""
+    result = card.execution_result or {}
+    po = db.get(PurchaseOrder, result.get("purchase_order_id")) if result.get("purchase_order_id") else None
+    if po is None:
+        return {"ok": False, "error": "purchase order no longer exists"}
+    if po.status != "raised":
+        return {"ok": False, "error": f"purchase order is already {po.status}"}
+    item = db.get(InventoryItem, po.item_id)
+    if item is not None:
+        item.on_hand = max(0.0, item.on_hand - po.quantity)
+    po.status = "cancelled"
+    db.flush()
+    return {"ok": True, "cancelled_purchase_order": po.id,
+            "message": f"Purchase order #{po.id} cancelled."}

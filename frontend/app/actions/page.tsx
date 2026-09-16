@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActionCardView } from "@/components/ActionCardView";
 import { ErrorNote, Section, Spinner } from "@/components/ui";
-import { api, type ActionCard } from "@/lib/api";
+import { api, type ActionCard, type DismissReason } from "@/lib/api";
+import { ReadinessBanner } from "@/components/ReadinessBanner";
 import { ENGINE_LABEL, inr } from "@/lib/format";
 
 const FILTERS = [
@@ -23,6 +24,13 @@ export default function ActionsPage() {
   const [error, setError] = useState<string | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [reasons, setReasons] = useState<DismissReason[]>([]);
+
+  // Reason list comes from the server so the dropdown and the learning loop
+  // cannot drift apart.
+  useEffect(() => {
+    api.dismissReasons().then((r) => setReasons(r.reasons)).catch(() => {});
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -44,8 +52,17 @@ export default function ActionsPage() {
     [pending, engine],
   );
 
-  async function decide(id: number, decision: "approve" | "snooze" | "dismiss") {
-    await api.decide(id, decision);
+  async function decide(
+    id: number,
+    decision: "approve" | "snooze" | "dismiss",
+    options?: { edits?: Record<string, unknown>; reason?: string; reason_note?: string },
+  ) {
+    await api.decide(id, decision, options);
+    await load();
+  }
+
+  async function undo(id: number) {
+    await api.undo(id);
     await load();
   }
 
@@ -69,6 +86,7 @@ export default function ActionsPage() {
 
   return (
     <div className="flex flex-col gap-6">
+      <ReadinessBanner />
       {runError && <p role="alert" className="card p-4 text-sm" style={{ color: "var(--status-critical)" }}>{runError}</p>}
       <Section
         title="Action bus"
@@ -139,7 +157,7 @@ export default function ActionsPage() {
         ) : (
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
             {shown.map((c) => (
-              <ActionCardView key={c.id} card={c} onDecide={decide} />
+              <ActionCardView key={c.id} card={c} onDecide={decide} onUndo={undo} dismissReasons={reasons} />
             ))}
           </div>
         )

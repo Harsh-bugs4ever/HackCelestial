@@ -20,15 +20,13 @@ import json
 import logging
 import math
 import re
-import urllib.error
-import urllib.request
 
 import numpy as np
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.engines.bus import Driver, Proposal, executor
+from app.engines.bus import Driver, Proposal, executor, reverser
 from app.models import ActionCard, ChatMessage, Guest, Review, ServiceRequest, SopDocument, utcnow
 
 log = logging.getLogger(__name__)
@@ -275,32 +273,67 @@ def refresh_all_dna(db: Session, limit: int = 200) -> int:
 # --------------------------------------------------------------------------
 # Concierge
 # --------------------------------------------------------------------------
-def _call_claude(system: str, user: str) -> str | None:
-    """Single Messages API call. Returns None if no key or the call fails."""
+def _anthropic_client():
+    """Lazily built SDK client, or None when the key or package is absent.
+
+    Lazy and guarded to match every other heavy import in this codebase: the
+    API has to boot and answer on a free tier with none of these installed.
+    """
     if not settings.anthropic_api_key:
         return None
-    body = json.dumps({
-        "model": settings.llm_model,
-        "max_tokens": 400,
-        "system": system,
-        "messages": [{"role": "user", "content": user}],
-    }).encode()
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
-        data=body,
-        headers={
-            "content-type": "application/json",
-            "x-api-key": settings.anthropic_api_key,
-            "anthropic-version": "2023-06-01",
-        },
-    )
+    global _CLIENT
+    if _CLIENT is None:
+        try:
+            import anthropic
+        except ImportError:
+            log.warning("anthropic SDK not installed; concierge uses the extractive answer")
+            return None
+        # The SDK retries 429/5xx with backoff on its own - the previous
+        # hand-rolled call gave up after a single failure.
+        _CLIENT = anthropic.Anthropic(api_key=settings.anthropic_api_key, max_retries=3)
+    return _CLIENT
+
+
+_CLIENT = None
+
+
+def _call_claude(system_blocks: list[dict], user: str) -> str | None:
+    """One Messages API call. Returns None if unavailable or unsuccessful."""
+    client = _anthropic_client()
+    if client is None:
+        return None
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            data = json.loads(resp.read())
-        return "".join(b.get("text", "") for b in data.get("content", []))
-    except (urllib.error.URLError, TimeoutError, ValueError, KeyError) as exc:
+        import anthropic
+    except ImportError:
+        return None
+    try:
+        response = client.messages.create(
+            model=settings.llm_model,
+            max_tokens=400,
+            # A three-sentence answer from supplied extracts is not a reasoning
+            # problem, and a guest is waiting: keep thinking on (the Opus 5
+            # default) but at the cheapest, fastest effort.
+            output_config={"effort": "low"},
+            system=system_blocks,
+            messages=[{"role": "user", "content": user}],
+        )
+    except anthropic.APIStatusError as exc:
         log.warning("concierge LLM call failed (%s); using grounded extractive answer", exc)
         return None
+    except anthropic.APIConnectionError as exc:
+        log.warning("concierge LLM unreachable (%s); using grounded extractive answer", exc)
+        return None
+    except Exception as exc:
+        log.warning("concierge LLM error (%s); using grounded extractive answer", exc)
+        return None
+
+    # A safety decline is not an error, but it is not an answer either - fall
+    # back rather than showing a guest a refusal.
+    if response.stop_reason == "refusal":
+        log.warning("concierge answer declined by the model; using extractive answer")
+        return None
+    text = "".join(b.text for b in response.content if b.type == "text").strip()
+    return text or None
 
 
 def concierge_answer(db: Session, guest_id: int | None, question: str) -> dict:
@@ -316,16 +349,31 @@ def concierge_answer(db: Session, guest_id: int | None, question: str) -> dict:
         f"{guest.name}, {guest.tier} tier. {guest.dna_summary}." if guest else "Walk-in guest, no profile."
     )
 
-    system = (
-        f"You are the concierge at {settings.resort_name}. Answer only from the resort "
-        "policy extracts provided. Be warm, specific and brief - three sentences at most. "
-        "Quote exact times and prices when the extracts contain them. If the extracts do "
-        "not cover the question, say you will check with the duty manager. Personalise "
-        "using the guest profile when it is genuinely relevant, never as flattery."
-    )
-    user = f"Guest profile: {profile}\n\nResort policy extracts:\n{context}\n\nGuest asks: {question}"
+    # Stable first, volatile last. The instructions and the retrieved policy
+    # text are the same for every guest asking a similar question; the profile
+    # and the question are not. That ordering is what a cache breakpoint needs,
+    # and it costs nothing to get right now (see module note on corpus size).
+    system_blocks = [
+        {
+            "type": "text",
+            "text": (
+                f"You are the concierge at {settings.resort_name}. Answer only from the "
+                "resort policy extracts provided. Be warm, specific and brief - three "
+                "sentences at most. Quote exact times and prices when the extracts "
+                "contain them. If the extracts do not cover the question, say you will "
+                "check with the duty manager. Personalise using the guest profile when "
+                "it is genuinely relevant, never as flattery."
+            ),
+        },
+        {
+            "type": "text",
+            "text": f"Resort policy extracts:\n{context}",
+            "cache_control": {"type": "ephemeral"},
+        },
+    ]
+    user = f"Guest profile: {profile}\n\nGuest asks: {question}"
 
-    answer = _call_claude(system, user)
+    answer = _call_claude(system_blocks, user)
     source = "claude"
     if answer is None:
         # grounded extractive fallback - still cites the SOP, never invents
@@ -488,20 +536,24 @@ def run(db: Session, today: dt.date | None = None) -> list[Proposal]:
 
 @executor("escalation")
 def execute_escalation(db: Session, card: ActionCard) -> dict:
-    ids = card.payload.get("request_ids", [])
+    payload = card.effective_payload
+    ids = payload.get("request_ids", [])
     touched = []
+    previous: dict[str, str] = {}
     for rid in ids:
         r = db.get(ServiceRequest, rid)
         if r is not None:
+            previous[str(rid)] = r.priority
             r.priority = "high"
             touched.append(r.summary)
     db.flush()
-    dept = card.payload.get("department")
+    dept = payload.get("department")
     return {
         "ok": True,
         "artifact": "escalation",
         "department": dept,
         "requests_escalated": len(touched),
+        "previous_priorities": previous,
         "message": (
             f"{len(touched)} requests escalated to the duty manager."
             if touched
@@ -514,20 +566,57 @@ def execute_escalation(db: Session, card: ActionCard) -> dict:
 
 @executor("offer")
 def execute_offer(db: Session, card: ActionCard) -> dict:
-    guest = db.get(Guest, card.payload["guest_id"])
+    payload = card.effective_payload
+    guest = db.get(Guest, payload["guest_id"])
     if guest is None:
-        raise ValueError(f"unknown guest {card.payload['guest_id']}")
+        raise ValueError(f"unknown guest {payload['guest_id']}")
     msg = (
-        f"Welcome back {guest.name.split()[0]} - we have held {card.payload['offer'].lower()} "
+        f"Welcome back {guest.name.split()[0]} - we have held {payload['offer'].lower()} "
         "for you. Shall we confirm it?"
     )
-    db.add(ChatMessage(guest_id=guest.id, ts=utcnow(), role="concierge", text=msg))
+    chat = ChatMessage(guest_id=guest.id, ts=utcnow(), role="concierge", text=msg)
+    db.add(chat)
     db.flush()
     return {
         "ok": True,
         "artifact": "offer",
         "guest": guest.name,
+        "guest_id": guest.id,
+        "chat_message_id": chat.id,
         "channel": "in_stay_chat",
         "message_sent": msg,
         "message": f"Offer sent to {guest.name} via in-stay chat.",
     }
+
+
+@reverser("escalation")
+def revert_escalation(db: Session, card: ActionCard) -> dict:
+    """Put each request back to the priority it had before the escalation."""
+    previous = (card.execution_result or {}).get("previous_priorities") or {}
+    restored = 0
+    for rid, priority in previous.items():
+        request = db.get(ServiceRequest, int(rid))
+        if request is not None:
+            request.priority = priority
+            restored += 1
+    db.flush()
+    return {"ok": True, "requests_restored": restored,
+            "message": f"{restored} request(s) returned to their previous priority."}
+
+
+@reverser("offer")
+def revert_offer(db: Session, card: ActionCard) -> dict:
+    """Retract the concierge message.
+
+    The guest may already have read it, so the message says so rather than
+    pretending the offer was never made.
+    """
+    result = card.execution_result or {}
+    chat = db.get(ChatMessage, result.get("chat_message_id")) if result.get("chat_message_id") else None
+    if chat is None:
+        return {"ok": False, "error": "offer message no longer exists"}
+    db.delete(chat)
+    db.flush()
+    return {"ok": True, "retracted": True,
+            "message": "Offer withdrawn from the in-stay chat. "
+                       "If the guest already saw it, honour it and log the exception."}

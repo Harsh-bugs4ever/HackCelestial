@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.cache import ModelCache
-from app.engines.bus import Driver, Proposal, executor
+from app.engines.bus import Driver, Proposal, executor, reverser
 from app.models import ActionCard, Asset, SensorReading, ServiceRecord, WorkOrder, utcnow
 
 log = logging.getLogger(__name__)
@@ -434,14 +434,16 @@ def run(db: Session, today: dt.date | None = None) -> list[Proposal]:
 @executor("work_order")
 def execute_work_order(db: Session, card: ActionCard) -> dict:
     """Approval raises a real work order against the asset."""
-    asset = db.get(Asset, card.payload["asset_id"])
+    payload = card.effective_payload
+    asset = db.get(Asset, payload["asset_id"])
     if asset is None:
-        raise ValueError(f"unknown asset {card.payload['asset_id']}")
+        raise ValueError(f"unknown asset {payload['asset_id']}")
 
+    previous_status = asset.status
     wo = WorkOrder(
         asset_id=asset.id,
-        scheduled_for=dt.datetime.fromisoformat(card.payload["scheduled_for"]),
-        window_reason=card.payload.get("window_reason", ""),
+        scheduled_for=dt.datetime.fromisoformat(payload["scheduled_for"]),
+        window_reason=payload.get("window_reason", ""),
         priority="high" if card.urgency in ("critical", "high") else "normal",
         status="open",
         action_card_id=card.id,
@@ -454,6 +456,8 @@ def execute_work_order(db: Session, card: ActionCard) -> dict:
         "artifact": "work_order",
         "work_order_id": wo.id,
         "asset": asset.name,
+        "asset_id": asset.id,
+        "previous_asset_status": previous_status,
         "scheduled_for": wo.scheduled_for.isoformat(),
         "message": (
             f"Work order #{wo.id} raised for {asset.name}, "
@@ -461,3 +465,23 @@ def execute_work_order(db: Session, card: ActionCard) -> dict:
         ),
         "raised_at": utcnow().isoformat(),
     }
+
+
+@reverser("work_order")
+def revert_work_order(db: Session, card: ActionCard) -> dict:
+    """Cancel the work order and release the asset back to its prior status."""
+    result = card.execution_result or {}
+    wo = db.get(WorkOrder, result.get("work_order_id")) if result.get("work_order_id") else None
+    if wo is None:
+        return {"ok": False, "error": "work order no longer exists"}
+    if wo.status != "open":
+        # Someone has already started the job; cancelling the record now would
+        # hide real work that happened.
+        return {"ok": False, "error": f"work order is already {wo.status}"}
+    asset = db.get(Asset, wo.asset_id)
+    if asset is not None:
+        asset.status = result.get("previous_asset_status") or "healthy"
+    db.delete(wo)
+    db.flush()
+    return {"ok": True, "cancelled_work_order": result.get("work_order_id"),
+            "message": f"Work order #{result.get('work_order_id')} cancelled."}

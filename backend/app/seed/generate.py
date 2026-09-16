@@ -421,12 +421,21 @@ def seed_workforce(db: Session, today: dt.date) -> None:
     sid = 1
     for role, (count, cost, skills) in roles.items():
         for _ in range(count):
+            name = f"{RNG.choice(FIRST_NAMES)} {RNG.choice(LAST_NAMES)}"
+            handle = name.lower().replace(" ", ".")
             staff.append(
                 Staff(
                     id=sid,
-                    name=f"{RNG.choice(FIRST_NAMES)} {RNG.choice(LAST_NAMES)}",
+                    name=name,
                     role=role,
                     skills=RNG.sample(skills, k=RNG.randint(1, len(skills))),
+                    # Reachable contacts, so an approved roster change demonstrably
+                    # reaches a person instead of stopping at an INSERT. The
+                    # numbers are in the reserved 99999xxxxx test block and the
+                    # domain is example.com - nothing here can reach a real
+                    # person if a live Twilio or SMTP key is ever configured.
+                    phone=f"+9199999{sid:05d}",
+                    email=f"{handle}.{sid}@example.com",
                     hourly_cost=round(cost * RNG.uniform(0.9, 1.15), 2),
                     max_hours_week=48,
                 )
@@ -541,6 +550,9 @@ def seed_inventory(db: Session) -> None:
         InventoryItem(
             id=i, name=n, unit=u, on_hand=oh, par_level=par, unit_cost=uc,
             lead_time_days=lt, consumption_per_occupied_room=cpr, department=dept,
+            # An approved purchase order has to reach somebody who can fulfil it.
+            supplier=f"{dept.upper()} Supplies Co.",
+            supplier_email=f"orders.{dept}@example.com",
         )
         for i, n, u, oh, par, uc, lt, cpr, dept in items
     )

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { AnimatePresence } from "motion/react";
 import { ActionCardView } from "@/components/ActionCardView";
+import { ReadinessBanner } from "@/components/ReadinessBanner";
 import { ResortHero } from "@/components/ResortHero";
 import { AnimatedNumber, GrowBar, Stagger } from "@/components/motion";
 import { ErrorNote, Section, Spinner, StaleBanner, StatTile, StatusPill } from "@/components/ui";
@@ -41,8 +42,17 @@ export default function DashboardPage() {
     return () => ws?.close();
   }, [reload]);
 
-  async function decide(id: number, decision: "approve" | "snooze" | "dismiss") {
-    await api.decide(id, decision);
+  async function decide(
+    id: number,
+    decision: "approve" | "snooze" | "dismiss",
+    options?: { edits?: Record<string, unknown>; reason?: string; reason_note?: string },
+  ) {
+    await api.decide(id, decision, options);
+    await reload();
+  }
+
+  async function undo(id: number) {
+    await api.undo(id);
     await reload();
   }
 
@@ -67,6 +77,9 @@ export default function DashboardPage() {
       <AnimatePresence>
         {stale && <StaleBanner key="stale" error={error!} onRetry={() => void reload()} />}
       </AnimatePresence>
+
+      {/* Qualifies every figure below it, so it sits above them. */}
+      <ReadinessBanner />
 
       {runError && <p role="alert" className="card p-4 text-sm" style={{ color: "var(--status-critical)" }}>{runError}</p>}
       <div><div className="eyebrow mb-2">YOUR PROPERTY, CONNECTED</div><h1 className="text-[28px] font-semibold tracking-tight">Operations overview</h1><p className="text-[13px] mt-2" style={{ color: "var(--text-secondary)" }}>A clear view of today. A confident plan for what comes next.</p></div>
@@ -126,7 +139,7 @@ export default function DashboardPage() {
                 refreshed queue closes the gap over it. */}
             <AnimatePresence initial={false} mode="popLayout">
               {data.actions.top.map((c) => (
-                <ActionCardView key={c.id} card={c} onDecide={decide} compact />
+                <ActionCardView key={c.id} card={c} onDecide={decide} onUndo={undo} compact />
               ))}
             </AnimatePresence>
           </div>

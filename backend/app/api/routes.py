@@ -4,14 +4,25 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
+from app.core import events, notify
+from app.core.auth import (
+    Principal,
+    auth_enabled,
+    current_principal,
+    require_engine_permission,
+    requires,
+)
+from app.core.clock import business_today, to_business
 from app.core.config import settings
 from app.core.db import get_db
 from app.engines import bus, demand, guest, maintenance, orchestrator, workforce
+from app.ingest import importers, readiness
 from app.models import (
     ActionCard,
     Asset,
@@ -19,7 +30,9 @@ from app.models import (
     DecisionLog,
     EngineRun,
     Guest,
+    ImportBatch,
     InventoryItem,
+    Notification,
     OccupancyDaily,
     Outcome,
     PurchaseOrder,
@@ -30,6 +43,8 @@ from app.models import (
     SopDocument,
     WorkOrder,
 )
+
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 router = APIRouter()
 
@@ -59,6 +74,17 @@ def card_json(c: ActionCard) -> dict[str, Any]:
         "decided_by": c.decided_by,
         "executed_at": c.executed_at.isoformat() if c.executed_at else None,
         "execution_result": c.execution_result,
+        "decided_by_role": c.decided_by_role,
+        "edited_payload": c.edited_payload,
+        "was_edited": c.was_edited,
+        "shadow": c.shadow,
+        "reverted_at": c.reverted_at.isoformat() if c.reverted_at else None,
+        "reverted_by": c.reverted_by,
+        # The UI needs to know whether to offer Undo without guessing at the
+        # window, and to say why when it cannot.
+        "can_revert": bus.reversible(c)[0],
+        "revert_blocked_reason": bus.reversible(c)[1],
+        "editable_fields": list(bus.EDITABLE_FIELDS.get(c.kind, ())),
     }
 
 
@@ -68,7 +94,7 @@ def card_json(c: ActionCard) -> dict[str, Any]:
 @router.get("/dashboard")
 def dashboard(db: Session = Depends(get_db)) -> dict[str, Any]:
     """The one screen a manager opens at the start of a shift."""
-    today = dt.date.today()
+    today = business_today()
 
     occ_rows = db.execute(
         select(
@@ -181,8 +207,46 @@ def get_action(card_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
 
 
 class Decision(BaseModel):
-    by: str = "manager"
+    """A manager's answer to a recommendation.
+
+    `by` is deliberately absent: authorship comes from the verified principal,
+    never from the request body. A self-declared approver is not an audit trail.
+    """
+
     snooze_hours: int = Field(24, ge=1, le=720)
+    # Approve-with-edits. Managers negotiate with recommendations rather than
+    # accepting them whole; forcing "right direction, half the number" through
+    # Dismiss taught Layer 4 that the engine was simply wrong.
+    edits: dict[str, Any] | None = None
+    # Dismiss reason. The most valuable feedback the product collects.
+    reason: str = Field("", max_length=40)
+    reason_note: str = Field("", max_length=2000)
+
+
+@router.post("/actions/{card_id}/undo")
+def undo(
+    card_id: int,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(requires("action:undo")),
+) -> dict[str, Any]:
+    """Reverse an executed action inside the undo window.
+
+    Without this, approving anything is a one-way door - which is exactly why a
+    cautious manager never approves the first recommendation.
+    """
+    card = db.get(ActionCard, card_id)
+    if card is None:
+        raise HTTPException(404, "action card not found")
+    require_engine_permission(principal, card.engine)
+    try:
+        bus.revert(db, card, principal.name, principal.role)
+    except bus.NotReversible as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
+    db.commit()
+    events.nudge()
+    db.refresh(card)
+    return card_json(card)
 
 
 @router.post("/actions/{card_id}/{decision}")
@@ -191,26 +255,52 @@ def decide(
     decision: Literal["approve", "snooze", "dismiss"],
     body: Decision | None = None,
     db: Session = Depends(get_db),
+    principal: Principal = Depends(current_principal),
 ) -> dict[str, Any]:
-    """AI recommends, human decides, system executes."""
+    """AI recommends, an authenticated human decides, the system executes."""
     card = db.get(ActionCard, card_id)
     if card is None:
         raise HTTPException(404, "action card not found")
     body = body or Decision()
+    # Approving a rate change and approving capital maintenance are different
+    # authorities; the card's own engine decides which one is needed.
+    require_engine_permission(principal, card.engine)
+
+    if body.reason and body.reason not in bus.DISMISS_REASONS:
+        raise HTTPException(
+            400,
+            f"unknown reason '{body.reason}'; expected one of {sorted(bus.DISMISS_REASONS)}",
+        )
+    if decision == "dismiss" and not body.reason:
+        raise HTTPException(
+            400,
+            "a dismissal needs a reason - it is what the feedback loop learns from. "
+            f"Expected one of {sorted(bus.DISMISS_REASONS)}.",
+        )
 
     try:
         if decision == "approve":
-            bus.approve(db, card, body.by)
+            bus.approve(db, card, principal.name, principal.role, edits=body.edits)
         elif decision == "snooze":
-            bus.snooze(db, card, body.snooze_hours, body.by)
+            bus.snooze(db, card, body.snooze_hours, principal.name, principal.role)
         else:
-            bus.dismiss(db, card, body.by)
+            bus.dismiss(
+                db, card, principal.name, principal.role,
+                reason=body.reason, reason_note=body.reason_note,
+            )
     except bus.DecisionConflict as exc:
         db.rollback()
         raise HTTPException(409, str(exc)) from exc
     db.commit()
+    events.nudge()
     db.refresh(card)
     return card_json(card)
+
+
+@router.get("/dismiss-reasons")
+def dismiss_reasons() -> dict[str, Any]:
+    """Drives the dismissal dropdown, so the UI and the loop cannot drift apart."""
+    return {"reasons": [{"id": k, "label": v} for k, v in bus.DISMISS_REASONS.items()]}
 
 
 @router.get("/actions-feed/history")
@@ -228,7 +318,11 @@ def action_history(limit: int = Query(40, ge=1, le=200), db: Session = Depends(g
 # Engines
 # --------------------------------------------------------------------------
 @router.post("/engines/run")
-def run_engines(engine: str | None = None, db: Session = Depends(get_db)) -> dict[str, Any]:
+def run_engines(
+    engine: str | None = None,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(requires("engines:run")),
+) -> dict[str, Any]:
     if engine:
         if engine not in orchestrator.ENGINES:
             raise HTTPException(400, f"unknown engine '{engine}'")
@@ -237,6 +331,9 @@ def run_engines(engine: str | None = None, db: Session = Depends(get_db)) -> dic
         results = orchestrator.run_all(db)
     if any(result["ok"] for result in results):
         orchestrator.apply_learning(db)
+    # New cards exist as of this commit; push them instead of making the
+    # dashboard wait for the next poll.
+    events.nudge()
     return {"results": results}
 
 
@@ -269,7 +366,7 @@ def forecast(
     days: int = Query(30, ge=7, le=90),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    today = dt.date.today()
+    today = business_today()
     house = demand.house_forecast(db, today, days)
     per_cat = demand.forecast_all(db, today, days)
 
@@ -344,7 +441,7 @@ def telemetry(asset_id: str, points: int = Query(180, ge=1, le=600), db: Session
     asset = db.get(Asset, asset_id)
     if asset is None:
         raise HTTPException(404, "asset not found")
-    a = maintenance.assess(db, asset, dt.date.today())
+    a = maintenance.assess(db, asset, business_today())
     if a is None:
         return {"asset": asset.name, "readings": []}
     df = a["series"].tail(points)
@@ -369,7 +466,7 @@ def telemetry(asset_id: str, points: int = Query(180, ge=1, le=600), db: Session
 
 @router.get("/roster")
 def roster(days: int = Query(7, ge=1, le=14), db: Session = Depends(get_db)) -> dict[str, Any]:
-    today = dt.date.today()
+    today = business_today()
     window = [today + dt.timedelta(days=i) for i in range(days)]
     req, ctx, cross = workforce.required_headcount(db, today, days)
     have = workforce.current_coverage(db, window)
@@ -446,7 +543,7 @@ def guests(limit: int = Query(20, ge=1, le=100), db: Session = Depends(get_db)) 
 
 @router.get("/sentiment")
 def sentiment(db: Session = Depends(get_db)) -> dict[str, Any]:
-    today = dt.date.today()
+    today = business_today()
     guest.backfill_sentiment(db)
     db.commit()
     recent = db.scalars(
@@ -518,6 +615,11 @@ def decisions(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db
                 "decision": d.decision, "predicted_impact_inr": d.predicted_impact_inr,
                 "confidence": d.confidence_at_decision,
                 "decided_by": d.decided_by,
+                "decided_by_role": d.decided_by_role,
+                "reason": d.reason,
+                "reason_label": bus.DISMISS_REASONS.get(d.reason, ""),
+                "reason_note": d.reason_note,
+                "edits": d.edits,
                 "at": d.created_at.isoformat() if d.created_at else None,
                 "realised_impact_inr": (
                     outcomes[d.action_card_id].realised_impact_inr
@@ -556,3 +658,188 @@ def categories(db: Session = Depends(get_db)) -> dict[str, Any]:
             for c in cats
         ]
     }
+
+
+# --------------------------------------------------------------------------
+# Who am I - lets the frontend hide controls the caller may not use, rather
+# than offering a button that will 403.
+# --------------------------------------------------------------------------
+@router.get("/me")
+def me(principal: Principal = Depends(current_principal)) -> dict[str, Any]:
+    return {
+        "name": principal.name,
+        "role": principal.role,
+        "permissions": sorted(principal.permissions),
+        "authenticated": not principal.is_anonymous,
+        "auth_enabled": auth_enabled(),
+        "shadow_mode": settings.shadow_mode,
+        "undo_window_minutes": settings.undo_window_minutes,
+        "timezone": settings.resort_timezone,
+        "currency": settings.currency,
+    }
+
+
+# --------------------------------------------------------------------------
+# Data ingestion - the supported path from a real PMS/POS/HRMS export into the
+# spine. See app/ingest/importers.py for why this is CSV and not a connector.
+# --------------------------------------------------------------------------
+@router.get("/import/datasets")
+def import_datasets() -> dict[str, Any]:
+    return {
+        "datasets": [
+            {
+                "name": d.name,
+                "required": list(d.required),
+                "optional": list(d.optional),
+                "note": d.note,
+            }
+            for d in importers.DATASETS.values()
+        ]
+    }
+
+
+@router.get("/import/{dataset}/template", response_class=PlainTextResponse)
+def import_template(dataset: str) -> str:
+    """A ready-to-fill header row, so nobody has to guess column names."""
+    try:
+        return importers.template_csv(dataset)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.post("/import/{dataset}")
+async def import_dataset(
+    dataset: str,
+    file: UploadFile = File(...),
+    dry_run: bool = Query(False, description="Validate and report without writing"),
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(requires("data:import")),
+) -> dict[str, Any]:
+    """Load one CSV into the spine.
+
+    A dry run is the default advice: an import that silently overwrites a year
+    of occupancy history because a column was misnamed is not recoverable.
+    """
+    if dataset not in importers.DATASETS:
+        raise HTTPException(404, f"unknown dataset '{dataset}'")
+    raw = await file.read()
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            413, f"file is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB"
+        )
+    if not raw.strip():
+        raise HTTPException(400, "the uploaded file is empty")
+
+    batch = importers.import_csv(
+        db, dataset, raw,
+        filename=file.filename or "",
+        imported_by=principal.name,
+        dry_run=dry_run,
+    )
+    # New source data invalidates fitted models; leaving the old ones cached
+    # would show a forecast built on data the property has just replaced.
+    if not dry_run and batch.rows_written:
+        demand.clear_forecast_cache()
+        maintenance.clear_assess_cache()
+    db.commit()
+    return {
+        "id": batch.id,
+        "dataset": batch.dataset,
+        "filename": batch.filename,
+        "dry_run": batch.dry_run,
+        "rows_seen": batch.rows_seen,
+        "rows_written": batch.rows_written,
+        "rows_skipped": batch.rows_skipped,
+        "ok": batch.ok,
+        "errors": batch.errors,
+        "imported_by": batch.imported_by,
+    }
+
+
+@router.get("/import/history")
+def import_history(
+    limit: int = Query(25, ge=1, le=100), db: Session = Depends(get_db)
+) -> dict[str, Any]:
+    batches = db.scalars(
+        select(ImportBatch).order_by(ImportBatch.id.desc()).limit(limit)
+    ).all()
+    return {
+        "batches": [
+            {
+                "id": b.id, "dataset": b.dataset, "filename": b.filename,
+                "imported_by": b.imported_by, "dry_run": b.dry_run,
+                "rows_seen": b.rows_seen, "rows_written": b.rows_written,
+                "rows_skipped": b.rows_skipped, "ok": b.ok,
+                "errors": b.errors[:10],
+                "at": to_business(b.created_at).isoformat() if b.created_at else None,
+            }
+            for b in batches
+        ]
+    }
+
+
+# --------------------------------------------------------------------------
+# Cold start - what the models actually know yet.
+# --------------------------------------------------------------------------
+@router.get("/readiness")
+def data_readiness(db: Session = Depends(get_db)) -> dict[str, Any]:
+    return readiness.assess(db)
+
+
+# --------------------------------------------------------------------------
+# Notification outbox - proof that the loop reached a human.
+# --------------------------------------------------------------------------
+@router.get("/notifications")
+def notifications(
+    status: str = Query("all"),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    stmt = select(Notification)
+    if status != "all":
+        stmt = stmt.where(Notification.status == status)
+    rows = db.scalars(stmt.order_by(Notification.id.desc()).limit(limit)).all()
+    counts = dict(
+        db.execute(
+            select(Notification.status, func.count()).group_by(Notification.status)
+        ).all()
+    )
+    return {
+        "counts": {
+            "queued": counts.get("queued", 0),
+            "sent": counts.get("sent", 0),
+            "failed": counts.get("failed", 0),
+        },
+        "channels_enabled": settings.notify_channel_list,
+        "notifications": [
+            {
+                "id": n.id, "channel": n.channel, "recipient": n.recipient,
+                "recipient_name": n.recipient_name, "subject": n.subject,
+                "body": n.body, "kind": n.kind, "status": n.status,
+                "attempts": n.attempts, "error": n.error,
+                "action_card_id": n.action_card_id,
+                "at": to_business(n.created_at).isoformat() if n.created_at else None,
+                "sent_at": to_business(n.sent_at).isoformat() if n.sent_at else None,
+            }
+            for n in rows
+        ],
+    }
+
+
+@router.post("/notifications/retry")
+def retry_notifications(
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(requires("engines:run")),
+) -> dict[str, Any]:
+    """Re-queue everything that gave up, then drain.
+
+    A failed notification is an instruction a person never received, so it needs
+    a hand-operated retry and not just a background loop.
+    """
+    failed = db.scalars(
+        select(Notification).where(Notification.status == "failed")
+    ).all()
+    for row in failed:
+        row.status, row.attempts = "queued", 0
+    db.commit()
+    return {"requeued": len(failed), **notify.flush_outbox(db, limit=100)}

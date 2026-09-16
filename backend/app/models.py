@@ -219,6 +219,10 @@ class Staff(Base):
     name: Mapped[str] = mapped_column(String(120))
     role: Mapped[str] = mapped_column(String(40))
     skills: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # Contact details are operational data, not HR nicety: a roster change the
+    # affected person never receives is not a roster change.
+    phone: Mapped[str] = mapped_column(String(40), default="")
+    email: Mapped[str] = mapped_column(String(160), default="")
     hourly_cost: Mapped[float] = mapped_column(Float, default=150.0)
     max_hours_week: Mapped[int] = mapped_column(Integer, default=48)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -280,6 +284,11 @@ class InventoryItem(Base):
     lead_time_days: Mapped[int] = mapped_column(Integer, default=2)
     consumption_per_occupied_room: Mapped[float] = mapped_column(Float, default=0.1)
     department: Mapped[str] = mapped_column(String(32), default="fnb")
+    # A purchase order has to reach somebody. Without these the PO executor
+    # wrote a row that no supplier ever saw.
+    supplier: Mapped[str] = mapped_column(String(120), default="")
+    supplier_email: Mapped[str] = mapped_column(String(160), default="")
+    supplier_phone: Mapped[str] = mapped_column(String(40), default="")
 
 
 class PurchaseOrder(Base, TimestampMixin):
@@ -365,9 +374,29 @@ class ActionCard(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
     decided_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     decided_by: Mapped[str] = mapped_column(String(80), default="")
+    decided_by_role: Mapped[str] = mapped_column(String(32), default="")
     snooze_until: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     executed_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     execution_result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    # Approve-with-edits: the manager's counter-offer, merged over `payload` at
+    # execution. A revenue manager who takes half the recommended rate rise
+    # agrees with the direction - recording that as a rejection would teach the
+    # demand engine exactly the wrong lesson.
+    edited_payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # Shadow mode approved this rather than executing it (see settings).
+    shadow: Mapped[bool] = mapped_column(Boolean, default=False)
+    reverted_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    reverted_by: Mapped[str] = mapped_column(String(80), default="")
+
+    @property
+    def effective_payload(self) -> dict[str, Any]:
+        """What the executor should act on: the manager's edits win."""
+        return {**(self.payload or {}), **(self.edited_payload or {})}
+
+    @property
+    def was_edited(self) -> bool:
+        return bool(self.edited_payload)
 
 
 # --------------------------------------------------------------------------
@@ -386,6 +415,13 @@ class DecisionLog(Base, TimestampMixin):
     confidence_at_decision: Mapped[float] = mapped_column(Float, default=0.0)
     features: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     decided_by: Mapped[str] = mapped_column(String(80), default="manager")
+    decided_by_role: Mapped[str] = mapped_column(String(32), default="")
+    # The most valuable signal in the product. "Wrong data" and "already
+    # handled" are both rejections, but only the first one means the engine
+    # was wrong - collapsing them into a bare dismissal throws that away.
+    reason: Mapped[str] = mapped_column(String(40), default="", index=True)
+    reason_note: Mapped[str] = mapped_column(Text, default="")
+    edits: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
 
 class Outcome(Base, TimestampMixin):
@@ -418,6 +454,57 @@ class EngineRun(Base, TimestampMixin):
 
 
 # Also installed on existing databases by init_db (create_all only handles new tables).
+
+# --------------------------------------------------------------------------
+# Delivery + ingestion - the two edges where the platform meets the real world
+# --------------------------------------------------------------------------
+class Notification(Base, TimestampMixin):
+    """Outbox row for every message the system tried to send.
+
+    Persisted rather than fire-and-forget because "the technician says they
+    were never told" is an operational dispute that needs an answer, and
+    because a failed send must be retryable without re-running the engine.
+    """
+
+    __tablename__ = "notifications"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    channel: Mapped[str] = mapped_column(String(20))          # console|email|sms|whatsapp|webhook
+    recipient: Mapped[str] = mapped_column(String(160))
+    recipient_name: Mapped[str] = mapped_column(String(120), default="")
+    subject: Mapped[str] = mapped_column(String(200), default="")
+    body: Mapped[str] = mapped_column(Text, default="")
+    kind: Mapped[str] = mapped_column(String(40), default="", index=True)
+    action_card_id: Mapped[int | None] = mapped_column(
+        ForeignKey("action_cards.id"), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(20), default="queued", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    sent_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    error: Mapped[str] = mapped_column(Text, default="")
+
+
+class ImportBatch(Base, TimestampMixin):
+    """One upload of real operating data into the spine.
+
+    Every engine in Layer 2 is only as good as what landed here, so an import
+    that half-succeeded needs to be visible and attributable, not silent.
+    """
+
+    __tablename__ = "import_batches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dataset: Mapped[str] = mapped_column(String(40), index=True)
+    filename: Mapped[str] = mapped_column(String(200), default="")
+    imported_by: Mapped[str] = mapped_column(String(80), default="")
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=False)
+    rows_seen: Mapped[int] = mapped_column(Integer, default=0)
+    rows_written: Mapped[int] = mapped_column(Integer, default=0)
+    rows_skipped: Mapped[int] = mapped_column(Integer, default=0)
+    errors: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    ok: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
 PERFORMANCE_INDEXES = (
     Index("ix_engine_run_latest", EngineRun.engine, EngineRun.started_at, EngineRun.id),
     Index("ix_action_status_created", ActionCard.status, ActionCard.created_at),
@@ -425,4 +512,6 @@ PERFORMANCE_INDEXES = (
     Index("ix_booking_guest", Booking.guest_id),
     Index("ix_review_guest", Review.guest_id),
     Index("ix_request_resolved_department", ServiceRequest.resolved_at, ServiceRequest.department),
+    Index("ix_notification_status_created", Notification.status, Notification.created_at),
+    Index("ix_decision_reason_engine", DecisionLog.reason, DecisionLog.engine),
 )

@@ -121,11 +121,15 @@ def _evaluate(db: Session, card: ActionCard, today: dt.date) -> tuple[float, boo
         return realised, True, "Serviced in the planned window; no unplanned outage recorded."
 
     if card.engine == "demand":
-        cat = db.get(RoomCategory, card.payload.get("category_id", ""))
+        # Score against what was actually applied: a manager who halved the
+        # recommended rise agreed with the engine, and grading them against the
+        # original number would mark that agreement as a miss.
+        applied = card.effective_payload
+        cat = db.get(RoomCategory, applied.get("category_id", ""))
         if cat is None:
             return 0.0, False, "Category no longer exists."
         # did the rate move survive to the stay date?
-        held = abs(cat.base_rate - float(card.payload.get("proposed_rate", 0))) < 1.0
+        held = abs(cat.base_rate - float(applied.get("proposed_rate", 0))) < 1.0
         realised = card.impact_inr * (0.88 if held else 0.35)
         return realised, held, (
             "Rate held through the booking window." if held
@@ -148,18 +152,37 @@ def learning_summary(db: Session) -> dict[str, Any]:
     by_engine: dict[str, dict[str, Any]] = {}
     for d in decisions:
         e = by_engine.setdefault(d.engine, {
-            "proposed": 0, "approved": 0, "dismissed": 0, "snoozed": 0,
+            "proposed": 0, "approved": 0, "dismissed": 0, "snoozed": 0, "reverted": 0,
             "predicted_inr": 0.0, "realised_inr": 0.0, "outcomes": 0, "correct": 0,
+            "edited": 0, "engine_fault": 0, "not_engine_fault": 0,
+            "dismiss_reasons": {},
         })
+        # A reversal is the undo of an earlier approval, not a fresh proposal.
+        if d.decision == "reverted":
+            e["reverted"] += 1
+            continue
         e["proposed"] += 1
         e[d.decision] = e.get(d.decision, 0) + 1
         if d.decision == "approved":
             e["predicted_inr"] += d.predicted_impact_inr
+            if d.edits:
+                e["edited"] += 1
+        elif d.decision == "dismissed":
+            reason = d.reason or "unspecified"
+            e["dismiss_reasons"][reason] = e["dismiss_reasons"].get(reason, 0) + 1
+            if reason in bus.ENGINE_FAULT_REASONS:
+                e["engine_fault"] += 1
+            elif reason != "unspecified":
+                # The manager rejected the card for reasons the model could not
+                # have known. That is not evidence the model was wrong.
+                e["not_engine_fault"] += 1
 
     for o in outcomes:
         e = by_engine.setdefault(o.engine, {
-            "proposed": 0, "approved": 0, "dismissed": 0, "snoozed": 0,
+            "proposed": 0, "approved": 0, "dismissed": 0, "snoozed": 0, "reverted": 0,
             "predicted_inr": 0.0, "realised_inr": 0.0, "outcomes": 0, "correct": 0,
+            "edited": 0, "engine_fault": 0, "not_engine_fault": 0,
+            "dismiss_reasons": {},
         })
         e["realised_inr"] += o.realised_impact_inr
         e["outcomes"] += 1
@@ -167,6 +190,14 @@ def learning_summary(db: Session) -> dict[str, Any]:
 
     for name, e in by_engine.items():
         e["acceptance_rate"] = round(e["approved"] / e["proposed"], 3) if e["proposed"] else None
+        # Decisions that actually judge the model: dismissals the engine could
+        # never have avoided are excluded from the denominator rather than
+        # counted as failures.
+        judged = e["proposed"] - e["not_engine_fault"]
+        e["judged_decisions"] = judged
+        e["effective_acceptance"] = round(e["approved"] / judged, 3) if judged > 0 else None
+        e["edit_rate"] = round(e["edited"] / e["approved"], 3) if e["approved"] else None
+        e["revert_rate"] = round(e["reverted"] / e["approved"], 3) if e["approved"] else None
         e["accuracy"] = round(e["correct"] / e["outcomes"], 3) if e["outcomes"] else None
         e["realisation_rate"] = (
             round(e["realised_inr"] / e["predicted_inr"], 3) if e["predicted_inr"] else None
@@ -174,7 +205,7 @@ def learning_summary(db: Session) -> dict[str, Any]:
         e["predicted_inr"] = round(e["predicted_inr"], 2)
         e["realised_inr"] = round(e["realised_inr"], 2)
 
-    total_decisions = len(decisions)
+    total_decisions = sum(1 for d in decisions if d.decision != "reverted")
     approved = sum(1 for d in decisions if d.decision == "approved")
     return {
         "engines": by_engine,
@@ -183,10 +214,15 @@ def learning_summary(db: Session) -> dict[str, Any]:
             "approved": approved,
             "acceptance_rate": round(approved / total_decisions, 3) if total_decisions else None,
             "outcomes_scored": len(outcomes),
+            "edited_approvals": sum(
+                1 for d in decisions if d.decision == "approved" and d.edits
+            ),
+            "reverted": sum(1 for d in decisions if d.decision == "reverted"),
             "realised_inr": round(sum(o.realised_impact_inr for o in outcomes), 2),
             "predicted_inr": round(sum(o.predicted_impact_inr for o in outcomes), 2),
         },
         "signal": _confidence_adjustments(by_engine),
+        "dismiss_reason_labels": bus.DISMISS_REASONS,
     }
 
 
@@ -201,13 +237,27 @@ def _confidence_adjustments(by_engine: dict[str, dict]) -> dict[str, float]:
     for name, e in by_engine.items():
         if not e["proposed"]:
             continue
-        acc = e.get("acceptance_rate")
+        # Judge on decisions that were actually about the model. An engine
+        # dismissed six times for "already handled" is well calibrated and
+        # badly timed, which is a scheduling problem, not a confidence one.
+        acc = e.get("effective_acceptance")
         realisation = e.get("realisation_rate")
         delta = 0.0
-        if acc is not None and e["proposed"] >= 4:
+        if acc is not None and e["judged_decisions"] >= 4:
             delta += (acc - 0.6) * 0.25
         if realisation is not None:
             delta += (min(realisation, 1.2) - 0.85) * 0.2
+        # Consistently edited-down recommendations mean the direction is right
+        # and the magnitude is not - a softer signal than an outright rejection,
+        # but a real one.
+        edit_rate = e.get("edit_rate")
+        if edit_rate is not None and e["approved"] >= 3:
+            delta -= min(edit_rate, 1.0) * 0.05
+        # Anything a manager had to undo is a stronger negative than a dismissal:
+        # it got far enough to touch the real world before being caught.
+        revert_rate = e.get("revert_rate")
+        if revert_rate:
+            delta -= min(revert_rate, 1.0) * 0.10
         adj[name] = round(float(np.clip(delta, -0.15, 0.12)), 3)
     return adj
 

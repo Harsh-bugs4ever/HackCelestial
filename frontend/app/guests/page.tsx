@@ -56,8 +56,17 @@ export default function GuestsPage() {
     }
   }
 
-  async function decide(id: number, d: "approve" | "snooze" | "dismiss") {
-    await api.decide(id, d);
+  async function decide(
+    id: number,
+    d: "approve" | "snooze" | "dismiss",
+    options?: { edits?: Record<string, unknown>; reason?: string; reason_note?: string },
+  ) {
+    await api.decide(id, d, options);
+    await load();
+  }
+
+  async function undo(id: number) {
+    await api.undo(id);
     await load();
   }
 
@@ -163,7 +172,7 @@ export default function GuestsPage() {
         <Section title="Guest recommendations">
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
             {cards.map((c) => (
-              <ActionCardView key={c.id} card={c} onDecide={decide} />
+              <ActionCardView key={c.id} card={c} onDecide={decide} onUndo={undo} />
             ))}
           </div>
         </Section>

@@ -31,3 +31,37 @@ services:
         value: "true"
       - key: KEEPALIVE_INTERVAL_SECONDS
         value: "600"
+      # Identity. Set this in the Render dashboard before sharing the URL:
+      # without it anyone who can reach the service can approve a rate change
+      # or raise a purchase order, and /health reports auth as DISABLED.
+      # Format: "token:Display Name:role" triples, comma-separated.
+      - key: AUTH_USERS
+        sync: false
+      # The operating day is resolved here, not in the server's UTC.
+      - key: RESORT_TIMEZONE
+        value: "Asia/Kolkata"
+      # Trust ramp: "true" records and previews approvals without writing.
+      - key: SHADOW_MODE
+        value: "false"
+      - key: UNDO_WINDOW_MINUTES
+        value: "30"
+      # Notification channels. "console" only logs - switch to email/whatsapp
+      # and add the credentials below to actually reach staff and suppliers.
+      - key: NOTIFY_CHANNELS
+        value: "console"
+      - key: DUTY_MANAGER_EMAIL
+        sync: false
+      - key: DUTY_MANAGER_PHONE
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_WHATSAPP_FROM
+        sync: false

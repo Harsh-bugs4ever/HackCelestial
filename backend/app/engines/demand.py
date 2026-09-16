@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.core.cache import ModelCache
 from app.core.config import settings
-from app.engines.bus import Driver, Proposal, executor
+from app.engines.bus import Driver, Proposal, executor, reverser
 from app.models import (
     ActionCard,
     Booking,
@@ -450,18 +450,41 @@ def run(db: Session, today: dt.date | None = None) -> list[Proposal]:
 @executor("rate_change")
 def execute_rate_change(db: Session, card: ActionCard) -> dict:
     """Approval writes the new rate back to the PMS-facing rate table."""
-    cat = db.get(RoomCategory, card.payload["category_id"])
+    payload = card.effective_payload
+    cat = db.get(RoomCategory, payload["category_id"])
     if cat is None:
-        raise ValueError(f"unknown category {card.payload['category_id']}")
+        raise ValueError(f"unknown category {payload['category_id']}")
     previous = cat.base_rate
-    cat.base_rate = float(card.payload["proposed_rate"])
+    cat.base_rate = float(payload["proposed_rate"])
     db.flush()
+    edited = " (manager-adjusted)" if card.was_edited else ""
     return {
         "ok": True,
         "artifact": "rate_change",
         "category": cat.name,
-        "date": card.payload["date"],
+        "category_id": cat.id,
+        "date": payload["date"],
         "previous_rate": previous,
         "new_rate": cat.base_rate,
-        "message": f"{cat.name} rate updated to INR {cat.base_rate:,.0f} for {card.payload['date']}.",
+        "message": (
+            f"{cat.name} rate updated to INR {cat.base_rate:,.0f} "
+            f"for {payload['date']}{edited}."
+        ),
     }
+
+
+@reverser("rate_change")
+def revert_rate_change(db: Session, card: ActionCard) -> dict:
+    """Put the rate back. The rate card is the most visible thing the system
+    touches, so it is also the one a manager is most likely to want back."""
+    result = card.execution_result or {}
+    cat = db.get(RoomCategory, result.get("category_id") or card.effective_payload["category_id"])
+    if cat is None:
+        return {"ok": False, "error": "category no longer exists"}
+    previous = result.get("previous_rate")
+    if previous is None:
+        return {"ok": False, "error": "no previous rate recorded"}
+    cat.base_rate = float(previous)
+    db.flush()
+    return {"ok": True, "restored_rate": cat.base_rate,
+            "message": f"{cat.name} rate restored to INR {cat.base_rate:,.0f}."}

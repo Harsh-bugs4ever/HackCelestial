@@ -10,3 +10,7 @@ ortools          # workforce.py   -> greedy scheduler fallback
 faiss-cpu        # guest.py -> numpy dot-product fallback
 sentence-transformers  # guest.py -> extractive keyword fallback (pulls torch, ~2.5GB)
 statsmodels
+
+# Concierge + review summarisation. Optional: guest.py falls back to an
+# extractive answer when this or ANTHROPIC_API_KEY is absent.
+anthropic>=0.40

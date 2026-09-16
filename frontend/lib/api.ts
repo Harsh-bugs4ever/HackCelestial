@@ -26,6 +26,96 @@ export type ActionCard = {
   decided_by: string;
   executed_at: string | null;
   execution_result: Record<string, unknown>;
+  decided_by_role: string;
+  edited_payload: Record<string, unknown>;
+  was_edited: boolean;
+  shadow: boolean;
+  reverted_at: string | null;
+  reverted_by: string;
+  /** Whether Undo should be offered, and what to say when it should not. */
+  can_revert: boolean;
+  revert_blocked_reason: string;
+  /** Payload keys this card kind lets a manager override. */
+  editable_fields: string[];
+};
+
+export type DismissReason = { id: string; label: string };
+
+export type Session = {
+  name: string;
+  role: string;
+  permissions: string[];
+  authenticated: boolean;
+  auth_enabled: boolean;
+  shadow_mode: boolean;
+  undo_window_minutes: number;
+  timezone: string;
+  currency: string;
+};
+
+export type EngineReadiness = {
+  label: string;
+  needs: string;
+  unit: string;
+  usable: number;
+  trusted: number;
+  have: number;
+  stage: "cold" | "learning" | "trusted";
+  progress: number;
+  shortfall: number;
+  why: string;
+};
+
+export type Readiness = {
+  overall: "cold" | "learning" | "trusted";
+  headline: string;
+  engines: Record<string, EngineReadiness>;
+  history: {
+    occupancy_days: number;
+    earliest_date: string | null;
+    sensor_readings: number;
+    assets: number;
+    active_staff: number;
+    reviews: number;
+    trusted_after_days: number;
+  };
+  needs_onboarding: boolean;
+};
+
+export type DatasetSpec = {
+  name: string;
+  required: string[];
+  optional: string[];
+  note: string;
+};
+
+export type ImportResult = {
+  id: number;
+  dataset: string;
+  filename: string;
+  dry_run: boolean;
+  rows_seen: number;
+  rows_written: number;
+  rows_skipped: number;
+  ok: boolean;
+  errors: { row: number; error: string; expected?: string[]; found?: string[] }[];
+  imported_by: string;
+};
+
+export type NotificationRow = {
+  id: number;
+  channel: string;
+  recipient: string;
+  recipient_name: string;
+  subject: string;
+  body: string;
+  kind: string;
+  status: "queued" | "sent" | "failed";
+  attempts: number;
+  error: string;
+  action_card_id: number | null;
+  at: string | null;
+  sent_at: string | null;
 };
 
 export type Dashboard = {
@@ -152,6 +242,17 @@ export type LearningSummary = {
       acceptance_rate: number | null;
       accuracy: number | null;
       realisation_rate: number | null;
+      /** Acceptance over decisions that actually judged the model - dismissals
+       *  the engine could not have avoided are excluded from the denominator. */
+      effective_acceptance: number | null;
+      judged_decisions: number;
+      edited: number;
+      edit_rate: number | null;
+      reverted: number;
+      revert_rate: number | null;
+      engine_fault: number;
+      not_engine_fault: number;
+      dismiss_reasons: Record<string, number>;
     }
   >;
   totals: {
@@ -161,15 +262,61 @@ export type LearningSummary = {
     outcomes_scored: number;
     realised_inr: number;
     predicted_inr: number;
+    edited_approvals: number;
+    reverted: number;
   };
   signal: Record<string, number>;
+  dismiss_reason_labels: Record<string, string>;
 };
+
+/**
+ * The caller's API token.
+ *
+ * Kept in sessionStorage rather than a cookie: the backend takes a bearer
+ * header, and a per-tab token dies with the tab, which is the right default on
+ * a shared back-office machine. It is only ever read in the browser - during SSR
+ * there is no storage and no token, which is correct, because server-rendered
+ * pages must not carry one operator's authority.
+ */
+const TOKEN_KEY = "sr360.token";
+
+export function getToken(): string {
+  if (typeof window === "undefined") return "";
+  try {
+    return window.sessionStorage.getItem(TOKEN_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function setToken(token: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (token) window.sessionStorage.setItem(TOKEN_KEY, token);
+    else window.sessionStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* private mode - the caller just stays unauthenticated */
+  }
+}
+
+/** Thrown for 401/403 so the UI can prompt for a token instead of showing a raw error. */
+export class AuthError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+    this.name = "AuthError";
+  }
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
-  if (init?.body && !headers.has("content-type")) {
+  // A bodyless GET must not carry a JSON content-type: it would force a CORS
+  // preflight on every poll for nothing.
+  if (init?.body && !(init.body instanceof FormData) && !headers.has("content-type")) {
     headers.set("content-type", "application/json");
   }
+  const token = getToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
   const res = await fetch(`${API_BASE}/api${path}`, {
     ...init,
     headers,
@@ -177,7 +324,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`${res.status} ${res.statusText} - ${body.slice(0, 200)}`);
+    let detail = body.slice(0, 300);
+    try {
+      const parsed = JSON.parse(body);
+      if (typeof parsed?.detail === "string") detail = parsed.detail;
+    } catch {
+      /* not JSON - keep the raw text */
+    }
+    if (res.status === 401 || res.status === 403) {
+      throw new AuthError(res.status, detail || "You are not signed in.");
+    }
+    throw new Error(detail || `${res.status} ${res.statusText}`);
   }
   return res.json() as Promise<T>;
 }
@@ -190,11 +347,63 @@ export const api = {
       `/actions?status=${status}${engine ? `&engine=${engine}` : ""}`,
     ),
 
-  decide: (id: number, decision: "approve" | "snooze" | "dismiss") =>
+  /**
+   * `by` is deliberately not sent - the backend takes authorship from the
+   * verified token, so the audit trail records who actually decided.
+   */
+  decide: (
+    id: number,
+    decision: "approve" | "snooze" | "dismiss",
+    options?: {
+      edits?: Record<string, unknown>;
+      reason?: string;
+      reason_note?: string;
+      snooze_hours?: number;
+    },
+  ) =>
     request<ActionCard>(`/actions/${id}/${decision}`, {
       method: "POST",
-      body: JSON.stringify({ by: "manager" }),
+      body: JSON.stringify(options ?? {}),
     }),
+
+  undo: (id: number) =>
+    request<ActionCard>(`/actions/${id}/undo`, { method: "POST" }),
+
+  dismissReasons: () =>
+    request<{ reasons: DismissReason[] }>("/dismiss-reasons"),
+
+  session: () => request<Session>("/me"),
+
+  readiness: () => request<Readiness>("/readiness"),
+
+  importDatasets: () => request<{ datasets: DatasetSpec[] }>("/import/datasets"),
+
+  importCsv: (dataset: string, file: File, dryRun: boolean) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request<ImportResult>(
+      `/import/${dataset}?dry_run=${dryRun ? "true" : "false"}`,
+      { method: "POST", body: form },
+    );
+  },
+
+  importHistory: () =>
+    request<{ batches: (ImportResult & { at: string | null })[] }>("/import/history"),
+
+  templateUrl: (dataset: string) => `${API_BASE}/api/import/${dataset}/template`,
+
+  notifications: (status = "all") =>
+    request<{
+      counts: { queued: number; sent: number; failed: number };
+      channels_enabled: string[];
+      notifications: NotificationRow[];
+    }>(`/notifications?status=${status}`),
+
+  retryNotifications: () =>
+    request<{ requeued: number; attempted: number; sent: number; failed: number }>(
+      "/notifications/retry",
+      { method: "POST" },
+    ),
 
   history: () =>
     request<{ count: number; cards: ActionCard[] }>("/actions-feed/history"),
@@ -355,6 +564,11 @@ export const api = {
         predicted_impact_inr: number;
         confidence: number;
         decided_by: string;
+        decided_by_role: string;
+        reason: string;
+        reason_label: string;
+        reason_note: string;
+        edits: Record<string, unknown>;
         at: string | null;
         realised_impact_inr: number | null;
       }[];

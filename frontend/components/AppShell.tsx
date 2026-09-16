@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, type ReactNode } from "react";
+import { SignIn } from "@/components/SignIn";
 
 const navigation = [
   { href: "/", label: "Overview", icon: "▦", group: "WORKSPACE" },
@@ -13,6 +14,8 @@ const navigation = [
   { href: "/guests", label: "Guest intelligence", icon: "♡" },
   { href: "/simulator", label: "Simulator", icon: "⌘", group: "INTELLIGENCE" },
   { href: "/learning", label: "Feedback loop", icon: "↻" },
+  { href: "/notifications", label: "Outbox", icon: "✉", group: "DATA & DELIVERY" },
+  { href: "/import", label: "Import data", icon: "↓" },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -27,7 +30,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <nav id="main-navigation" aria-label="Main navigation" className={`sidebar-nav ${open ? "is-open" : ""}`}>
         {navigation.map(n => <div key={n.href}>{n.group && <div className="nav-group">{n.group}</div>}<Link href={n.href} onClick={() => setOpen(false)} aria-current={pathname === n.href ? "page" : undefined} className="sidebar-link"><span aria-hidden="true" className="nav-icon">{n.icon}</span>{n.label}{pathname === n.href && <span className="nav-active-dot" />}</Link></div>)}
       </nav>
-      <div className="sidebar-bottom"><div className="workspace-note"><span className="eyebrow">Your decision. More clarity.</span><p>Turn property insights into thoughtful action.</p><Link href="/simulator">Explore the simulator →</Link></div><div className="workspace-profile"><span className="profile-avatar">SR</span><div>Resort workspace<small>Operations & intelligence</small></div></div></div>
+      <div className="sidebar-bottom"><div className="workspace-note"><span className="eyebrow">Your decision. More clarity.</span><p>Turn property insights into thoughtful action.</p><Link href="/simulator">Explore the simulator →</Link></div><div className="workspace-profile"><span className="profile-avatar">SR</span><div>Resort workspace<small>Operations & intelligence</small></div></div><div className="pt-3"><SignIn /></div></div>
     </aside>
     <div className="workspace-main">
       <header className="workspace-header"><div><span className="breadcrumb-parent">Workspace</span><span className="breadcrumb-slash">/</span><strong>{current?.label ?? "Resort operations"}</strong></div><span className="workspace-badge">Smart Resort 360 <span>· Operations console</span></span></header>

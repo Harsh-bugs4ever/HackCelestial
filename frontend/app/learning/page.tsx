@@ -144,7 +144,7 @@ export default function LearningPage() {
                 </span>
               </div>
 
-              <div className="grid grid-cols-3 gap-4 text-[12px]">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 text-[12px]">
                 <div>
                   <div style={{ color: "var(--text-muted)" }}>Approved</div>
                   <div className="text-[18px] font-semibold tabular">{e.approved}</div>

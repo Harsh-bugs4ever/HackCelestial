@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     app_name: str = "Smart Resort 360"
     resort_name: str = "Celestial Bay Resort & Spa"
     currency: str = "INR"
+    # Operating day is asked in resort local time, never the server's - see
+    # app/core/clock.py for why this is separate from stored UTC timestamps.
+    resort_timezone: str = "Asia/Kolkata"
 
     # Layer 1 - data spine
     database_url: str = f"sqlite:///{(ROOT / 'resort360.db').as_posix()}"
@@ -47,11 +50,48 @@ class Settings(BaseSettings):
     render_external_url: str = ""
     keepalive_interval_seconds: int = 600
 
+    # Identity. "token:Display Name:role" triples, comma-separated. Empty means
+    # open demo mode; app/core/auth.py logs an error if that happens in public.
+    auth_users: str = ""
+
+    # Trust ramp. Shadow mode records approvals and their intended effect but
+    # writes no artifacts, so a property can watch the system for a month
+    # before letting it touch the roster or the rate card.
+    shadow_mode: bool = False
+    # How long an executed action stays reversible from the UI.
+    undo_window_minutes: int = 30
+
+    # Notifications. Providers are tried in order; "console" always works and
+    # keeps the outbox honest in development.
+    notify_channels: str = "console"
+    notify_from_email: str = "ops@smart-resort-360.local"
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_starttls: bool = True
+    notify_webhook_url: str = ""
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_from_number: str = ""          # SMS sender
+    twilio_whatsapp_from: str = ""        # e.g. "whatsapp:+14155238886"
+    # Where critical cards go when no specific person owns them.
+    duty_manager_email: str = ""
+    duty_manager_phone: str = ""
+
+    # Cold start. Below this much history the engines publish, but the UI warns
+    # that the models have not seen a full seasonal cycle yet.
+    min_history_days_trusted: int = 365
+
     # Engine tuning
     forecast_horizon_days: int = 30
     total_rooms: int = 120
     rate_floor_pct: float = 0.75   # guardrails from slide 5: floor/ceiling optimizer
     rate_ceiling_pct: float = 1.60
+
+    @property
+    def notify_channel_list(self) -> list[str]:
+        return [c.strip() for c in self.notify_channels.split(",") if c.strip()]
 
     @property
     def is_sqlite(self) -> bool:
